@@ -132,7 +132,8 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     }
 
     private func mvp(aspect: Float) -> simd_float4x4 {
-        let distance = extent * 1.6 / max(zoom, 0.05)
+        // a narrow (portrait) view sees less sideways, so back off further to keep the whole path in frame
+        let distance = extent * 1.5 / max(zoom, 0.05) / min(1, max(aspect, 0.3))
         let direction = SIMD3<Float>(cosf(pitch) * sinf(yaw), -cosf(pitch) * cosf(yaw), sinf(pitch))
         let eye = center + direction * distance
         let view = lookAt(eye: eye, center: center, up: SIMD3<Float>(0, 0, 1))

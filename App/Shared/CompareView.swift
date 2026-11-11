@@ -33,16 +33,22 @@ struct CompareView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Button("Choose a program to compare") { importing = true }
-                if let otherName {
-                    Text(otherName).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Button("Choose file") { importing = true }
+                    if let otherName {
+                        Text(otherName).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
                 }
-                Spacer()
                 if otherText != nil {
-                    Toggle("Changes only", isOn: $changesOnly).toggleStyle(.switch).fixedSize()
-                    Text(changeCount == 0 ? "No differences" : "\(changeCount) changed lines")
-                        .font(.callout.monospacedDigit())
+                    HStack(spacing: 12) {
+                        Toggle("Changes only", isOn: $changesOnly).toggleStyle(.switch).fixedSize()
+                        Spacer()
+                        Text(changeCount == 0 ? "No differences" : "\(changeCount) changed lines")
+                            .font(.callout.monospacedDigit())
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(12)
@@ -67,9 +73,10 @@ struct CompareView: View {
                 List(shownRows) { row in
                     HStack(alignment: .top, spacing: 0) {
                         side(number: row.oldNumber, text: row.oldText, tint: row.kind == .removed ? .red : nil)
-                        Divider()
+                        Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1)
                         side(number: row.newNumber, text: row.newText, tint: row.kind == .added ? .green : nil)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                     .listRowInsets(EdgeInsets())
                 }
                 .listStyle(.plain)

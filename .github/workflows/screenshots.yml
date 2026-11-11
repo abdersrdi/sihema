@@ -5,6 +5,10 @@ name: Screenshots
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "mac, iphone, ipad or all"
+        default: "all"
 
 jobs:
   shots:
@@ -19,6 +23,7 @@ jobs:
           xcodegen generate
 
       - name: Mac
+        if: inputs.platforms == 'all' || inputs.platforms == 'mac'
         continue-on-error: true
         run: |
           set -o pipefail
@@ -31,6 +36,7 @@ jobs:
             2>&1 | tee ui-mac.log
 
       - name: iPhone
+        if: inputs.platforms == 'all' || inputs.platforms == 'iphone'
         continue-on-error: true
         run: |
           set -o pipefail
@@ -49,6 +55,7 @@ jobs:
             2>&1 | tee ui-iphone.log
 
       - name: iPad
+        if: inputs.platforms == 'all' || inputs.platforms == 'ipad'
         continue-on-error: true
         run: |
           set -o pipefail

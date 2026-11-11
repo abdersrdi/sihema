@@ -10,8 +10,24 @@ final class ScreenshotTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-UITestDirect", "-UITestTab", tab] + extra
         app.launch()
+
+        #if os(macOS)
+        app.activate()
+        let window = app.windows.firstMatch
+        let appeared = window.waitForExistence(timeout: 20)
         sleep(wait)
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        // what the test can see, to find out why a window might be missing
+        let info = XCTAttachment(string: "window appeared: \(appeared)\nwindows: \(app.windows.count)\n\n\(app.debugDescription)")
+        info.name = name + "-debug.txt"
+        info.lifetime = .keepAlways
+        add(info)
+        let screenshot = window.exists ? window.screenshot() : app.screenshot()
+        #else
+        sleep(wait)
+        let screenshot = app.screenshot()
+        #endif
+
+        let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

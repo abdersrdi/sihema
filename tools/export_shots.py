@@ -30,7 +30,7 @@ if os.path.exists(manifest):
     walk(json.load(open(manifest)))
 for exported, name in found:
     name = re.sub(r"_\d+_[0-9A-Fa-f-]{36}", "", name)
-    if not name.lower().endswith(".png"):
+    if not os.path.splitext(name)[1]:
         name += ".png"
     path = os.path.join(source, exported)
     if os.path.exists(path):
