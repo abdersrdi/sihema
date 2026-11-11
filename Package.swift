@@ -11,6 +11,7 @@ let package = Package(
     targets: [
         .target(name: "SihemaCore", path: "Sources/SihemaCore"),
         .executableTarget(name: "SihemaBench", dependencies: ["SihemaCore"], path: "Sources/SihemaBench"),
+        .executableTarget(name: "SihemaCheck", dependencies: ["SihemaCore"], path: "Sources/SihemaCheck"),
         .testTarget(name: "SihemaCoreTests", dependencies: ["SihemaCore"], path: "Tests/SihemaCoreTests")
     ]
 )
