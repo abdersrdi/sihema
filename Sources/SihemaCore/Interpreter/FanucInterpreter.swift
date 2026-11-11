@@ -28,6 +28,8 @@ public struct MachineConfig: Sendable {
     public var secondReferencePosition = SIMD3<Double>(repeating: 0)
     /// Cutter radius for each offset number D, in mm. G41/G42 need an entry for the D they use.
     public var cutterRadii: [Int: Double] = [:]
+    /// Machine travel in machine coordinates. When set, moves outside it are reported.
+    public var travelLimits: TravelLimits?
 
     public init() {}
 }
@@ -84,6 +86,11 @@ public final class FanucInterpreter {
         runner.tp.endedByProgramEnd = runner.finished
         if runner.usedComp {
             CutterCompensation.apply(&runner.tp, maxDiagnostics: config.maxDiagnostics)
+        }
+        if let limits = config.travelLimits {
+            for violation in runner.tp.travelViolations(limits) {
+                runner.note(violation.severity, line: violation.line, violation.message)
+            }
         }
         return runner.tp
     }
@@ -546,7 +553,9 @@ private struct Runner {
                 }
             case 77 where w.hasValueFlag: // M
                 switch Int(w.value.rounded()) {
-                case 6: tool = pendingTool
+                case 6:
+                    tool = pendingTool
+                    tp.toolChanges += 1
                 case 2, 30: programEnd = true
                 case 97: callLocal = true
                 case 98: callSub = true

@@ -161,6 +161,7 @@ public struct Toolpath: Sendable {
     public var rapidLength = 0.0
     public var cuttingLength = 0.0
     public var dwellSeconds = 0.0
+    public var toolChanges = 0
     public var finalPosition = SIMD3<Double>(repeating: 0)
     public var endedByProgramEnd = false
 

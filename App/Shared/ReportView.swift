@@ -17,7 +17,7 @@ struct ReportView: View {
                     row("Moves", "\(analysis.toolpath.segments.count)")
                     row("Cutting length", String(format: "%.1f mm", analysis.toolpath.cuttingLength))
                     row("Rapid length", String(format: "%.1f mm", analysis.toolpath.rapidLength))
-                    row("Cycle time (simple)", formatTime(analysis.toolpath.estimatedSeconds(rapidFeed: 15_000)))
+                    row("Cycle time (with acceleration)", formatTime(analysis.toolpath.cycleTime()))
                 }
                 Section("Core speed") {
                     row("Tokenize", String(format: "%.3f s", analysis.tokenizeSeconds))
