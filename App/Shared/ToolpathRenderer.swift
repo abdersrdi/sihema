@@ -46,6 +46,8 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     private var vertexCount = 0
     private var center = SIMD3<Float>(repeating: 0)
     private var extent: Float = 1
+    private var boundsLow = SIMD3<Float>(repeating: 0)
+    private var boundsHigh = SIMD3<Float>(repeating: 0)
 
     var yaw: Float = -0.6
     var pitch: Float = 0.6
@@ -108,7 +110,15 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         }
         if cutLow.x <= cutHigh.x { center = (cutLow + cutHigh) / 2 }
         var radius: Float = 0.5
-        for vertex in vertices { radius = max(radius, simd_length(vertex.position - center)) }
+        var allLow = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var allHigh = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for vertex in vertices {
+            radius = max(radius, simd_length(vertex.position - center))
+            allLow = simd_min(allLow, vertex.position)
+            allHigh = simd_max(allHigh, vertex.position)
+        }
+        boundsLow = allLow
+        boundsHigh = allHigh
         extent = radius * 2
         vertexCount = vertices.count
         buffer = vertices.withUnsafeBytes { raw in
@@ -144,12 +154,36 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
 
     private func mvp(aspect: Float) -> simd_float4x4 {
         // a narrow (portrait) view sees less sideways, so back off further to keep the whole path in frame
-        let distance = extent * 1.2 / max(zoom, 0.05) / min(1, max(aspect, 0.3))
+        let distance = extent * 1.5 / min(1, max(aspect, 0.3))
         let direction = SIMD3<Float>(cosf(pitch) * sinf(yaw), -cosf(pitch) * cosf(yaw), sinf(pitch))
         let eye = center + direction * distance
         let view = lookAt(eye: eye, center: center, up: SIMD3<Float>(0, 0, 1))
         let projection = perspective(fovy: 0.8, aspect: aspect, near: max(distance * 0.01, 0.01), far: distance * 20)
-        return projection * view
+        let base = projection * view
+
+        // fit: project the corners of the path's bounding box and shift and scale the picture so it is
+        // centred and fills the view, whatever the angle; zoom then multiplies on top
+        var lowX = Float.greatestFiniteMagnitude, highX = -Float.greatestFiniteMagnitude
+        var lowY = Float.greatestFiniteMagnitude, highY = -Float.greatestFiniteMagnitude
+        for i in 0..<8 {
+            let corner = SIMD4<Float>(i & 1 == 0 ? boundsLow.x : boundsHigh.x,
+                                      i & 2 == 0 ? boundsLow.y : boundsHigh.y,
+                                      i & 4 == 0 ? boundsLow.z : boundsHigh.z, 1)
+            let p = base * corner
+            guard p.w > 0.0001 else { return base }
+            lowX = min(lowX, p.x / p.w); highX = max(highX, p.x / p.w)
+            lowY = min(lowY, p.y / p.w); highY = max(highY, p.y / p.w)
+        }
+        let width = max(highX - lowX, 1e-4), height = max(highY - lowY, 1e-4)
+        let scale = min(1.8 / width, 1.8 / height) * max(zoom, 0.05)
+        let cx = (lowX + highX) / 2, cy = (lowY + highY) / 2
+        let fit = simd_float4x4(columns: (
+            SIMD4<Float>(scale, 0, 0, 0),
+            SIMD4<Float>(0, scale, 0, 0),
+            SIMD4<Float>(0, 0, 1, 0),
+            SIMD4<Float>(-scale * cx, -scale * cy, 0, 1)
+        ))
+        return fit * base
     }
 
     // MARK: MTKViewDelegate
