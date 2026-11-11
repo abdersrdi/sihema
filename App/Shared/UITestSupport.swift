@@ -1,19 +1,17 @@
 import Foundation
 import SihemaCore
 
-/// Launch switches used by the automated screenshot tests.
-///   -UITestDirect          open a sample program in a plain window instead of the document browser
-///   -UITestTab <name>      start on a tab: code, path, compare or report
-///   -UITestSimulate        run the material removal automatically on the report tab
+/// Switches used by the automated screenshot tests, passed as environment variables because macOS treats loose
+/// launch arguments as documents to open.
+///   SIHEMA_UITEST=1        open the sample program
+///   SIHEMA_TAB=<name>      start on a tab: code, path, compare or report
+///   SIHEMA_SIMULATE=1      run the material removal automatically on the report tab
 enum UITestSupport {
-    static let arguments = ProcessInfo.processInfo.arguments
+    static let environment = ProcessInfo.processInfo.environment
 
-    static var isDirect: Bool { arguments.contains("-UITestDirect") }
-    static var simulate: Bool { arguments.contains("-UITestSimulate") }
-    static var tab: String? {
-        guard let index = arguments.firstIndex(of: "-UITestTab"), index + 1 < arguments.count else { return nil }
-        return arguments[index + 1]
-    }
+    static var isDirect: Bool { environment["SIHEMA_UITEST"] != nil }
+    static var simulate: Bool { environment["SIHEMA_SIMULATE"] != nil }
+    static var tab: String? { environment["SIHEMA_TAB"] }
 }
 
 /// Machine settings used until the app has a machine profile screen.
