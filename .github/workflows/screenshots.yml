@@ -35,6 +35,38 @@ jobs:
             CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES \
             2>&1 | tee ui-mac.log
 
+      - name: Mac launch diagnostics
+        if: inputs.platforms == 'macdiag'
+        continue-on-error: true
+        run: |
+          mkdir -p diag
+          xcodebuild build \
+            -project Sihema.xcodeproj \
+            -scheme Sihema-macOS \
+            -destination 'platform=macOS' \
+            -derivedDataPath dd \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES \
+            2>&1 | tail -5
+          APP=$(find "$PWD/dd" -name Sihema.app -maxdepth 6 | head -1)
+          echo "app: $APP" | tee diag/info.txt
+          codesign -dv --entitlements - "$APP" >> diag/info.txt 2>&1 || true
+          # with the test switches
+          open -a "$APP" --args -UITestDirect -UITestTab code
+          sleep 10
+          screencapture -x diag/direct.png || true
+          osascript -e 'tell application "System Events" to get name of every window of process "Sihema"' > diag/windows-direct.txt 2>&1 || true
+          log show --last 2m --predicate 'process == "Sihema"' --style compact > diag/log-direct.txt 2>&1 || true
+          pkill -x Sihema || true
+          sleep 3
+          # plain launch, as a user would
+          open -a "$APP"
+          sleep 10
+          screencapture -x diag/normal.png || true
+          osascript -e 'tell application "System Events" to get name of every window of process "Sihema"' > diag/windows-normal.txt 2>&1 || true
+          log show --last 2m --predicate 'process == "Sihema"' --style compact > diag/log-normal.txt 2>&1 || true
+          pkill -x Sihema || true
+          ls -la ~/Library/Logs/DiagnosticReports > diag/crashes.txt 2>&1 || true
+
       - name: iPhone
         if: inputs.platforms == 'all' || inputs.platforms == 'iphone'
         continue-on-error: true
@@ -91,4 +123,5 @@ jobs:
           name: screenshots
           path: |
             shots
+            diag
             ui-*.log
