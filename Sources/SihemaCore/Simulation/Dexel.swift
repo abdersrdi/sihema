@@ -101,6 +101,12 @@ public struct SimulationResult: Sendable {
     public var columnUpdates: Int
     /// Source lines of rapid moves that cut into the stock (a rapid that removes material is a crash).
     public var rapidMovesThroughStock: [Int]
+
+    public init(removedVolume: Double, columnUpdates: Int, rapidMovesThroughStock: [Int]) {
+        self.removedVolume = removedVolume
+        self.columnUpdates = columnUpdates
+        self.rapidMovesThroughStock = rapidMovesThroughStock
+    }
 }
 
 public enum DexelSimulator {
