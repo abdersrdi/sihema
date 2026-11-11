@@ -16,7 +16,7 @@ final class ScreenshotTests: XCTestCase {
         #if os(macOS)
         app.activate()
         // the document app starts with an Open panel; "New Document" opens the sample program
-        let newDocument = app.buttons["New Document"]
+        let newDocument = app.buttons["NewDocumentButton"]
         if newDocument.waitForExistence(timeout: 20) { newDocument.click() }
         let untitled = app.windows.matching(NSPredicate(format: "title BEGINSWITH 'Untitled'")).firstMatch
         let appeared = untitled.waitForExistence(timeout: 20)
