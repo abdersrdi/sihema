@@ -99,6 +99,17 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
                 vertices.append(Vertex(position: Self.float3(b), color: color))
             }
         }
+        // centre on the cutting moves (a tall rapid retract would pull the view upwards), then fit every vertex
+        var cutLow = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+        var cutHigh = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+        for vertex in vertices where vertex.color == cutColor {
+            cutLow = simd_min(cutLow, vertex.position)
+            cutHigh = simd_max(cutHigh, vertex.position)
+        }
+        if cutLow.x <= cutHigh.x { center = (cutLow + cutHigh) / 2 }
+        var radius: Float = 0.5
+        for vertex in vertices { radius = max(radius, simd_length(vertex.position - center)) }
+        extent = radius * 2
         vertexCount = vertices.count
         buffer = vertices.withUnsafeBytes { raw in
             device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
@@ -133,7 +144,7 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
 
     private func mvp(aspect: Float) -> simd_float4x4 {
         // a narrow (portrait) view sees less sideways, so back off further to keep the whole path in frame
-        let distance = extent * 1.15 / max(zoom, 0.05) / min(1, max(aspect, 0.3))
+        let distance = extent * 1.2 / max(zoom, 0.05) / min(1, max(aspect, 0.3))
         let direction = SIMD3<Float>(cosf(pitch) * sinf(yaw), -cosf(pitch) * cosf(yaw), sinf(pitch))
         let eye = center + direction * distance
         let view = lookAt(eye: eye, center: center, up: SIMD3<Float>(0, 0, 1))
