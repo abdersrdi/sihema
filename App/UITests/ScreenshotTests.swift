@@ -13,15 +13,18 @@ final class ScreenshotTests: XCTestCase {
 
         #if os(macOS)
         app.activate()
-        let window = app.windows.firstMatch
-        let appeared = window.waitForExistence(timeout: 20)
+        // the document app starts with an Open panel; "New Document" opens the sample program
+        let newDocument = app.buttons["New Document"]
+        if newDocument.waitForExistence(timeout: 20) { newDocument.click() }
+        let untitled = app.windows.matching(NSPredicate(format: "title BEGINSWITH 'Untitled'")).firstMatch
+        let appeared = untitled.waitForExistence(timeout: 20)
         sleep(wait)
-        // what the test can see, to find out why a window might be missing
-        let info = XCTAttachment(string: "window appeared: \(appeared)\nwindows: \(app.windows.count)\n\n\(app.debugDescription)")
+        let info = XCTAttachment(string: "document window appeared: \(appeared)\nwindows: \(app.windows.count)\n\n\(app.debugDescription)")
         info.name = name + "-debug.txt"
         info.lifetime = .keepAlways
         add(info)
-        let screenshot = window.exists ? window.screenshot() : app.screenshot()
+        let target = untitled.exists ? untitled : app.windows.firstMatch
+        let screenshot = target.exists ? target.screenshot() : app.screenshot()
         #else
         sleep(wait)
         let screenshot = app.screenshot()
