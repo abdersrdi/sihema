@@ -21,7 +21,7 @@ struct Analysis: Sendable {
         var tokens = TokenizedProgram()
         let tokenize = clock.measure { tokens = GCodeTokenizer.tokenize(text) }
         var path = Toolpath()
-        let interpret = clock.measure { path = FanucInterpreter().run(tokens) }
+        let interpret = clock.measure { path = FanucInterpreter(config: AppDefaults.machine).run(tokens) }
         var result = Analysis()
         result.lineCount = tokens.lineCount
         result.wordCount = tokens.words.count

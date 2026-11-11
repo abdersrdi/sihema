@@ -50,6 +50,30 @@ targets:
               - public.plain-text
               - public.data
 
+  SihemaMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - App/UITests
+    dependencies:
+      - target: Sihema-macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sihema.spike.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+  SihemaiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - App/UITests
+    dependencies:
+      - target: Sihema-iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sihema.spike.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
   Sihema-iOS:
     type: application
     platform: iOS
@@ -88,3 +112,19 @@ targets:
             LSItemContentTypes:
               - public.plain-text
               - public.data
+
+schemes:
+  Sihema-macOS:
+    build:
+      targets:
+        Sihema-macOS: all
+    test:
+      targets:
+        - SihemaMacUITests
+  Sihema-iOS:
+    build:
+      targets:
+        Sihema-iOS: all
+    test:
+      targets:
+        - SihemaiOSUITests

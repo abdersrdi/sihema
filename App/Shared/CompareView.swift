@@ -80,6 +80,14 @@ struct CompareView: View {
             load(result)
         }
         .onChange(of: baseText) { _, _ in recompute() }
+        .task {
+            // the screenshot tests compare against an edited copy of the sample program
+            if UITestSupport.isDirect && otherText == nil {
+                otherText = DemoPrograms.compareOther
+                otherName = "demo-edited.nc"
+                recompute()
+            }
+        }
     }
 
     private func side(number: Int?, text: String, tint: Color?) -> some View {

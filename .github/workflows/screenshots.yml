@@ -1,0 +1,84 @@
+name: Screenshots
+
+# Launches the app on each tab with a sample program, on a Mac and on an iPhone and iPad simulator, and keeps a
+# screenshot of every tab. Started by hand.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  shots:
+    name: ${{ matrix.label }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: mac, scheme: Sihema-macOS, family: "" }
+          - { label: iphone, scheme: Sihema-iOS, family: iPhone }
+          - { label: ipad, scheme: Sihema-iOS, family: iPad }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen and generate the project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Pick a simulator
+        id: sim
+        if: matrix.family != ''
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)['devices']
+          want = '${{ matrix.family }}'
+          devs = [d for runtime, ds in sorted(data.items()) if 'iOS' in runtime for d in ds if d['name'].startswith(want)]
+          print(devs[-1]['udid'])
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+
+      - name: Run the screenshot tests (Mac)
+        if: matrix.family == ''
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Sihema.xcodeproj \
+            -scheme ${{ matrix.scheme }} \
+            -destination 'platform=macOS' \
+            -resultBundlePath Result.xcresult \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES \
+            2>&1 | tee ui.log
+
+      - name: Run the screenshot tests (simulator)
+        if: matrix.family != ''
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Sihema.xcodeproj \
+            -scheme ${{ matrix.scheme }} \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath Result.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee ui.log
+
+      - name: Export the screenshots
+        if: always()
+        run: |
+          rm -rf exported shots
+          xcrun xcresulttool export attachments --path Result.xcresult --output-path exported || true
+          python3 tools/export_shots.py exported shots || true
+          ls -la shots || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.label }}
+          path: |
+            shots
+            ui.log

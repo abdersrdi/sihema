@@ -9,6 +9,15 @@ struct ReportView: View {
     @State private var simulating = false
 
     var body: some View {
+        content
+            .task(id: automaticRun) {
+                // the screenshot tests start the material removal by themselves
+                if UITestSupport.simulate, simulationText == nil, let analysis { runSimulation(analysis) }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if let analysis {
             List {
                 Section("Program") {
@@ -46,6 +55,8 @@ struct ReportView: View {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+
+    private var automaticRun: String { analysis?.id.uuidString ?? "" }
 
     private func row(_ name: String, _ value: String) -> some View {
         HStack {
