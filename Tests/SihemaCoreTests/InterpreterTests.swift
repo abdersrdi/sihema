@@ -160,10 +160,11 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("without a feed") })
     }
 
-    func testMacroLineIsReported() {
-        let tp = run("#1=5\nG01 X1 F100\n")
-        XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("Macro") })
+    func testMacroVariablesAreEvaluated() {
+        let tp = run("#1=5\nG01 X#1 F100\n")
         XCTAssertEqual(tp.segments.count, 1)
+        XCTAssertEqual(tp.segments[0].end.x, 5, accuracy: 1e-9)
+        XCTAssertTrue(tp.diagnostics.isEmpty)
     }
 
     func testCycleTime() {

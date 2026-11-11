@@ -42,6 +42,10 @@ public struct TokenizedProgram: Sendable {
     /// Index into `words` where each line starts. Has `lineCount + 1` entries (the last one is a sentinel).
     public internal(set) var lineWordStart: [Int] = []
     public internal(set) var lineFlags: [LineFlags] = []
+    /// Byte offset where each line starts. Has `lineCount + 1` entries (the last one is the end of the source).
+    public internal(set) var lineByteStart: [Int] = []
+    /// The original bytes, kept so macro lines can be evaluated from their text.
+    public internal(set) var source: [UInt8] = []
 
     public init() {}
 
@@ -49,6 +53,13 @@ public struct TokenizedProgram: Sendable {
 
     public func wordRange(line: Int) -> Range<Int> {
         lineWordStart[line]..<lineWordStart[line + 1]
+    }
+
+    /// The text of one line without its line ending.
+    public func lineBytes(_ line: Int) -> ArraySlice<UInt8> {
+        var end = lineByteStart[line + 1]
+        while end > lineByteStart[line] && (source[end - 1] == 10 || source[end - 1] == 13) { end -= 1 }
+        return source[lineByteStart[line]..<end]
     }
 }
 
@@ -82,14 +93,17 @@ public enum GCodeTokenizer {
     public static func tokenize(_ buf: UnsafeBufferPointer<UInt8>) -> TokenizedProgram {
         var program = TokenizedProgram()
         let n = buf.count
+        program.source = Array(buf)
         program.words.reserveCapacity(n / 5 + 16)
         program.lineWordStart.reserveCapacity(n / 20 + 16)
+        program.lineByteStart.reserveCapacity(n / 20 + 16)
         program.lineFlags.reserveCapacity(n / 20 + 16)
         let powers = pow10
 
         var i = 0
         while i < n {
             program.lineWordStart.append(program.words.count)
+            program.lineByteStart.append(i)
             var lineFlags: LineFlags = []
             var atStart = true
 
@@ -136,6 +150,8 @@ public enum GCodeTokenizer {
                     if upper >= 65 && upper <= 90 {
                         let start = i
                         i += 1
+                        // two letters in a row (GOTO10, END1, WHILE...) mean a macro keyword, not a word
+                        if i < n && (buf[i] & 0xDF) >= 65 && (buf[i] & 0xDF) <= 90 { lineFlags.insert(.macro) }
                         while i < n && (buf[i] == 32 || buf[i] == 9) { i += 1 }
 
                         var flags: UInt8 = 0
@@ -189,6 +205,7 @@ public enum GCodeTokenizer {
             program.lineFlags.append(lineFlags)
         }
         program.lineWordStart.append(program.words.count)
+        program.lineByteStart.append(n)
         return program
     }
 }

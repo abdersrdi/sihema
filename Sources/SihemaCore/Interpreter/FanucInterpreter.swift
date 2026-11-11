@@ -12,15 +12,22 @@ public struct MachineConfig: Sendable {
     public var maxDiagnostics = 500
     /// Fanuc controls usually power up in G01.
     public var initialMotionLinear = true
+    /// Units used until the program says G20 or G21. Controllers set this with a parameter.
+    public var defaultInches = false
+    /// Safety stop for endless loops, in executed blocks.
+    public var maxExecutedBlocks = 20_000_000
+    /// Deepest nesting of subprogram and macro calls.
+    public var maxCallDepth = 32
 
     public init() {}
 }
 
 /// Interprets Fanuc-style ISO G-code into a toolpath.
 ///
-/// Phase 0 scope: G00 G01 G02 G03 (IJK and R, helical, all three planes), G04, G17-G19, G20/G21, G90/G91,
-/// G90.1/G91.1, G94/G95, F S T M words, M2/M30 program end. Recognized but not simulated yet (reported
-/// once as diagnostics): cutter radius compensation, canned cycles, G28/G53/G92, subprograms, macros.
+/// Supported: G00 G01 G02 G03 (IJK and R, helical, all three planes), G04, G17-G19, G20/G21, G90/G91, G90.1/G91.1,
+/// G94/G95, F S T M words, M2/M30 program end, Macro B (variables, expressions, functions, IF/GOTO, WHILE/DO/END),
+/// subprograms (M98/M99, Haas M97) and macro calls (G65). Recognized but not simulated yet (reported once as
+/// diagnostics): cutter radius compensation, canned cycles, G28/G53/G92, rotary axes.
 public final class FanucInterpreter {
     public var config: MachineConfig
 
@@ -29,19 +36,39 @@ public final class FanucInterpreter {
     }
 
     public func run(_ program: TokenizedProgram) -> Toolpath {
-        var runner = Runner(config: config)
+        var runner = Runner(config: config, program: program)
         runner.tp.segments.reserveCapacity(program.lineCount)
+        if !config.defaultInches && looksLikeInches(program) {
+            runner.note(.warning, line: 0,
+                        "No G20 or G21 in this program, so millimetres are assumed, but the numbers look like inches. Set the default units if that is wrong")
+        }
         let count = program.lineCount
-        var line = 0
-        while line < count && !runner.finished {
-            let range = program.wordRange(line: line)
-            if !range.isEmpty {
-                runner.execute(line: line, words: program.words[range], flags: program.lineFlags[line])
-            } else if program.lineFlags[line].contains(.macro) {
-                runner.noteOnce(10003, line: line, .info,
-                                "Macro variables and expressions are not evaluated yet; blocks that use them may be incomplete")
+        var pc = 0
+        var blocks = 0
+        while pc < count && !runner.finished {
+            blocks += 1
+            if blocks > config.maxExecutedBlocks {
+                runner.note(.error, line: pc, "Stopped after \(config.maxExecutedBlocks) blocks; the program may loop forever")
+                break
             }
-            line += 1
+            let line = pc
+            pc += 1
+            runner.jump = nil
+            let flags = program.lineFlags[line]
+            if flags.contains(.macro) {
+                runner.executeMacroLine(line: line, program: program)
+            } else {
+                let range = program.wordRange(line: line)
+                if !range.isEmpty {
+                    runner.execute(line: line, words: program.words[range], flags: flags)
+                }
+            }
+            if let code = runner.vars.alarmCode {
+                let text = runner.alarmMessage.map { ": " + $0 } ?? ""
+                runner.note(.error, line: line, "Program alarm (#3000 = \(code))\(text)")
+                runner.finished = true
+            }
+            if let target = runner.jump { pc = target }
         }
         runner.tp.finalPosition = runner.pos
         runner.tp.endedByProgramEnd = runner.finished
@@ -53,9 +80,49 @@ public final class FanucInterpreter {
     }
 }
 
+/// Programs with no G20/G21 whose feeds and sizes are small are probably in inches.
+private func looksLikeInches(_ program: TokenizedProgram) -> Bool {
+    var feeds: [Double] = []
+    var largest = 0.0
+    for w in program.words where w.hasValueFlag {
+        switch w.letter {
+        case 71:
+            if w.value == 20 || w.value == 21 { return false }
+        case 70:
+            if feeds.count < 4000 { feeds.append(w.value) }
+        case 88, 89, 90:
+            largest = max(largest, abs(w.value))
+        default:
+            break
+        }
+    }
+    guard feeds.count >= 2 else { return false }
+    feeds.sort()
+    return feeds[feeds.count / 2] < 80 && largest < 60
+}
+
 private enum Motion {
     case none, rapid, linear, arcCW, arcCCW
 }
+
+private enum PendingCall {
+    case sub(number: Int, count: Int, local: Bool)
+    case macro(number: Int, args: [UInt8: Double])
+    case ret
+}
+
+private struct CallFrame {
+    var returnLine: Int
+    var repeatLeft: Int
+    var startLine: Int
+    var savedLocals: [Int: Double]?
+}
+
+/// Which local variable each G65 argument letter fills.
+private let macroArgumentVariables: [UInt8: Int] = [
+    65: 1, 66: 2, 67: 3, 73: 4, 74: 5, 75: 6, 68: 7, 69: 8, 70: 9, 72: 11, 77: 13,
+    81: 17, 82: 18, 83: 19, 84: 20, 85: 21, 86: 22, 87: 23, 88: 24, 89: 25, 90: 26
+]
 
 /// Name of a G code stored as tenths, for example 901 becomes "G90.1".
 private func gName(_ code: Int) -> String {
@@ -70,7 +137,7 @@ private struct Runner {
     var plane = PlaneID.xy
     var absolute = true
     var arcCenterAbsolute = false
-    var inches = false
+    var inches: Bool
     var feedPerRev = false
     /// Programmed feed converted to millimetres (mm/min, or mm/rev when feed per revolution is active).
     var feedValue = 0.0
@@ -80,10 +147,73 @@ private struct Runner {
     var reported = Set<Int>()
     var finished = false
 
-    init(config: MachineConfig) {
+    // flow control
+    var jump: Int?
+    var pendingCall: PendingCall?
+    var callStack: [CallFrame] = []
+    var vars = MacroVariables()
+    var alarmMessage: String?
+    var labels: [Int: [Int]] = [:]
+    var programLines: [Int: Int] = [:]
+    var loopEnd: [Int: Int] = [:]
+    var loopStart: [Int: Int] = [:]
+
+    init(config: MachineConfig, program: TokenizedProgram) {
         self.config = config
         self.pos = config.startPosition
         self.motion = config.initialMotionLinear ? .linear : .none
+        self.inches = config.defaultInches
+        indexProgram(program)
+    }
+
+    mutating func indexProgram(_ program: TokenizedProgram) {
+        var open: [Int: [Int]] = [:]
+        for line in 0..<program.lineCount {
+            let range = program.wordRange(line: line)
+            if let first = program.words[range].first, first.hasValueFlag {
+                if first.letter == 78 {
+                    labels[Int(first.value), default: []].append(line)
+                } else if first.letter == 79, programLines[Int(first.value)] == nil {
+                    programLines[Int(first.value)] = line
+                }
+            }
+            guard program.lineFlags[line].contains(.macro) else { continue }
+            let bytes = Array(program.lineBytes(line))
+            var i = 0
+            while i < bytes.count {
+                let c = bytes[i]
+                if c == 40 {
+                    while i < bytes.count && bytes[i] != 41 { i += 1 }
+                    i += 1
+                    continue
+                }
+                if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+                    var run = ""
+                    while i < bytes.count && ((bytes[i] >= 65 && bytes[i] <= 90) || (bytes[i] >= 97 && bytes[i] <= 122)) {
+                        run.append(Character(UnicodeScalar(bytes[i] & 0xDF)))
+                        i += 1
+                    }
+                    var j = i
+                    while j < bytes.count && bytes[j] == 32 { j += 1 }
+                    var number = 0
+                    var hasNumber = false
+                    while j < bytes.count && bytes[j] >= 48 && bytes[j] <= 57 {
+                        number = number * 10 + Int(bytes[j] - 48)
+                        hasNumber = true
+                        j += 1
+                    }
+                    if run == "DO" && hasNumber {
+                        open[number, default: []].append(line)
+                    } else if run == "END" && hasNumber, let start = open[number]?.popLast() {
+                        loopEnd[start] = line
+                        loopStart[line] = start
+                    }
+                    if hasNumber { i = j }
+                    continue
+                }
+                i += 1
+            }
+        }
     }
 
     mutating func note(_ severity: Diagnostic.Severity, line: Int, _ message: String) {
@@ -101,14 +231,183 @@ private struct Runner {
         note(severity, line: line, message())
     }
 
-    mutating func execute(line: Int, words: ArraySlice<GCodeWord>, flags: LineFlags) {
-        if flags.contains(.macro) {
-            noteOnce(10003, line: line, .info,
-                     "Macro variables and expressions are not evaluated yet; blocks that use them may be incomplete")
-        }
+    // MARK: Macro lines
 
+    mutating func executeMacroLine(line: Int, program: TokenizedProgram) {
+        vars.position = pos
+        let parser = MacroParser(program.lineBytes(line), vars: vars)
+        var words: [GCodeWord] = []
+        do {
+            try readMacroLine(parser, line: line, words: &words)
+        } catch let error as MacroError {
+            note(.error, line: line, "Macro error: \(error.message)")
+            return
+        } catch {
+            return
+        }
+        if vars.alarmCode != nil && alarmMessage == nil { alarmMessage = parser.lastComment }
+        if jump != nil || words.isEmpty { return }
+        execute(line: line, words: words[...], flags: program.lineFlags[line].subtracting(.macro))
+    }
+
+    mutating func jumpToLabel(_ number: Int, from line: Int) throws {
+        guard let lines = labels[number], !lines.isEmpty else {
+            throw MacroError("Block N\(number) not found")
+        }
+        jump = lines.first(where: { $0 > line }) ?? lines[0]
+    }
+
+    mutating func readMacroLine(_ p: MacroParser, line: Int, words: inout [GCodeWord]) throws {
+        while true {
+            p.skipSpace()
+            guard let c = p.peek() else { return }
+            if c == 40 { p.skipComment(); continue }
+            if c == 59 { return }
+            if c == 37 || c == 47 { p.advance(); continue }
+            if c == 35 {
+                let reference = try p.parseReference()
+                p.skipSpace()
+                guard p.peek() == 61 else { throw MacroError("Expected = after a variable") }
+                p.advance()
+                let value = try p.parseOperand()
+                try p.assign(reference, value)
+                continue
+            }
+            let isLetter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+            guard isLetter else { p.advance(); continue }
+
+            let run = p.peekAlphaRun()
+            switch run {
+            case "IF":
+                p.advance(2)
+                p.skipSpace()
+                guard p.peek() == 91 else { throw MacroError("IF needs [condition]") }
+                p.advance()
+                let condition = try p.parseExpression()
+                try p.expect(93)
+                p.skipSpace()
+                let next = p.peekAlphaRun()
+                if next == "GOTO" {
+                    p.advance(4)
+                    let target = Int((try p.parseOperand() ?? 0).rounded())
+                    if condition != 0 {
+                        try jumpToLabel(target, from: line)
+                        return
+                    }
+                } else if next == "THEN" {
+                    p.advance(4)
+                    if condition == 0 { return }
+                } else {
+                    throw MacroError("IF needs GOTO or THEN")
+                }
+            case "WHILE":
+                p.advance(5)
+                p.skipSpace()
+                guard p.peek() == 91 else { throw MacroError("WHILE needs [condition]") }
+                p.advance()
+                let condition = try p.parseExpression()
+                try p.expect(93)
+                p.skipSpace()
+                guard p.peekAlphaRun() == "DO" else { throw MacroError("WHILE needs DO") }
+                p.advance(2)
+                _ = try p.parseOperand()
+                if condition == 0 {
+                    guard let end = loopEnd[line] else { throw MacroError("WHILE has no matching END") }
+                    jump = end + 1
+                    return
+                }
+            case "DO":
+                p.advance(2)
+                _ = try p.parseOperand()
+            case "END":
+                p.advance(3)
+                _ = try p.parseOperand()
+                guard let start = loopStart[line] else { throw MacroError("END has no matching WHILE") }
+                jump = start
+                return
+            case "GOTO":
+                p.advance(4)
+                let target = Int((try p.parseOperand() ?? 0).rounded())
+                try jumpToLabel(target, from: line)
+                return
+            default:
+                if run.count > 1 {
+                    noteOnce(10010, line: line, .info, "Macro statement \(run) is not supported yet and is ignored")
+                    return
+                }
+                let letter = UInt8(ascii: UnicodeScalar(run)!)
+                p.advance()
+                p.skipSpace()
+                if let next = p.peek(),
+                   (next >= 48 && next <= 57) || next == 46 || next == 43 || next == 45 || next == 35 || next == 91 {
+                    if let value = try p.parseOperand() {
+                        let flags = GCodeWord.hasValue | (p.lastHadDecimal ? GCodeWord.hadDecimalPoint : 0)
+                        words.append(GCodeWord(letter: letter, flags: flags, offset: 0, value: value))
+                    }
+                } else {
+                    words.append(GCodeWord(letter: letter, flags: 0, offset: 0, value: 0))
+                }
+            }
+        }
+    }
+
+    // MARK: Calls
+
+    mutating func performCall(_ call: PendingCall, line: Int) {
+        switch call {
+        case .ret:
+            guard var frame = callStack.popLast() else {
+                noteOnce(10011, line: line, .info, "M99 in the main program ends the program")
+                finished = true
+                return
+            }
+            if frame.repeatLeft > 0 {
+                frame.repeatLeft -= 1
+                callStack.append(frame)
+                jump = frame.startLine
+            } else {
+                if let saved = frame.savedLocals { vars.local = saved }
+                jump = frame.returnLine
+            }
+        case .sub(let number, let count, let local):
+            guard callStack.count < config.maxCallDepth else {
+                note(.error, line: line, "Subprograms are nested deeper than \(config.maxCallDepth) levels")
+                finished = true
+                return
+            }
+            let target = local ? labels[number]?.first : programLines[number]
+            guard let start = target else {
+                note(.error, line: line, local ? "Block N\(number) for M97 not found" : "Subprogram O\(number) not found")
+                return
+            }
+            callStack.append(CallFrame(returnLine: line + 1, repeatLeft: max(count, 1) - 1, startLine: start, savedLocals: nil))
+            jump = start
+        case .macro(let number, let args):
+            guard callStack.count < config.maxCallDepth else {
+                note(.error, line: line, "Macro calls are nested deeper than \(config.maxCallDepth) levels")
+                finished = true
+                return
+            }
+            guard let start = programLines[number] else {
+                note(.error, line: line, "Macro program O\(number) not found")
+                return
+            }
+            var locals: [Int: Double] = [:]
+            for (letter, value) in args {
+                if let id = macroArgumentVariables[letter] { locals[id] = value }
+            }
+            callStack.append(CallFrame(returnLine: line + 1, repeatLeft: 0, startLine: start, savedLocals: vars.local))
+            vars.local = locals
+            jump = start
+        }
+    }
+
+    // MARK: Blocks
+
+    mutating func execute(line: Int, words: ArraySlice<GCodeWord>, flags: LineFlags) {
         var newMotion = motion
         var nonModal = 0
+        var isMacroCall = false
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
@@ -136,6 +435,9 @@ private struct Runner {
                          "Cutter radius compensation (G41/G42) is not applied yet; the path shown is the programmed path")
             case 430, 440:
                 noteOnce(code, line: line, .info, "Tool length compensation (G43/G44) is not applied yet")
+            case 650:
+                nonModal = 650
+                isMacroCall = true
             case 800:
                 newMotion = .none
             case 810...890:
@@ -160,10 +462,16 @@ private struct Runner {
         var hasRadius = false
         var rawX: Double?
         var rawP: Double?
+        var rawL: Double?
         var pHadDecimal = false
         var programEnd = false
+        var callSub = false
+        var callLocal = false
+        var returnFromSub = false
+        var macroArgs: [UInt8: Double] = [:]
 
         for w in words {
+            if isMacroCall && w.letter != 71 && w.hasValueFlag { macroArgs[w.letter] = w.value }
             switch w.letter {
             case 88 where w.hasValueFlag: // X
                 axisValue.x = w.value * scale; axisMask |= 1; rawX = w.value
@@ -187,14 +495,19 @@ private struct Runner {
                 pendingTool = Int32(truncatingIfNeeded: Int(w.value.rounded()))
             case 80 where w.hasValueFlag: // P
                 rawP = w.value; pHadDecimal = w.hadDecimal
+            case 76 where w.hasValueFlag: // L
+                rawL = w.value
             case 65, 66, 67: // A B C
-                noteOnce(10005, line: line, .info, "Rotary axes (A, B, C) are ignored in Phase 0")
+                if !isMacroCall {
+                    noteOnce(10005, line: line, .info, "Rotary axes (A, B, C) are ignored in Phase 1")
+                }
             case 77 where w.hasValueFlag: // M
                 switch Int(w.value.rounded()) {
                 case 6: tool = pendingTool
                 case 2, 30: programEnd = true
-                case 98, 99:
-                    noteOnce(10006, line: line, .warning, "Subprograms (M98/M99) are not executed yet")
+                case 97: callLocal = true
+                case 98: callSub = true
+                case 99: returnFromSub = true
                 default: break
                 }
             default: break
@@ -224,6 +537,26 @@ private struct Runner {
                          radius: radius, hasRadius: hasRadius)
                 }
             }
+        }
+
+        if isMacroCall, let p = macroArgs[80] {
+            pendingCall = .macro(number: Int(p.rounded()), args: macroArgs)
+        } else if callSub, let p = rawP {
+            var number = Int(p.rounded())
+            var count = rawL.map { Int($0.rounded()) } ?? 1
+            if number > 9999 {
+                count = number / 10000
+                number %= 10000
+            }
+            pendingCall = .sub(number: number, count: count, local: false)
+        } else if callLocal, let p = rawP {
+            pendingCall = .sub(number: Int(p.rounded()), count: rawL.map { Int($0.rounded()) } ?? 1, local: true)
+        } else if returnFromSub {
+            pendingCall = .ret
+        }
+        if let call = pendingCall {
+            pendingCall = nil
+            performCall(call, line: line)
         }
 
         if programEnd { finished = true }
