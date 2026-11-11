@@ -46,8 +46,7 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     private var vertexCount = 0
     private var center = SIMD3<Float>(repeating: 0)
     private var extent: Float = 1
-    private var boundsLow = SIMD3<Float>(repeating: 0)
-    private var boundsHigh = SIMD3<Float>(repeating: 0)
+    private var fitPoints: [SIMD3<Float>] = []
 
     var yaw: Float = -0.6
     var pitch: Float = 0.6
@@ -117,8 +116,18 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
             allLow = simd_min(allLow, vertex.position)
             allHigh = simd_max(allHigh, vertex.position)
         }
-        boundsLow = allLow
-        boundsHigh = allHigh
+        // points used to fit the view: an even sample plus the vertex at each extreme of every axis
+        // (a bounding box would over-estimate: its corners are not part of the path)
+        fitPoints.removeAll(keepingCapacity: true)
+        let stride = max(1, vertices.count / 4000)
+        for i in Swift.stride(from: 0, to: vertices.count, by: stride) { fitPoints.append(vertices[i].position) }
+        for axis in 0..<3 {
+            if let low = vertices.min(by: { $0.position[axis] < $1.position[axis] }),
+               let high = vertices.max(by: { $0.position[axis] < $1.position[axis] }) {
+                fitPoints.append(low.position)
+                fitPoints.append(high.position)
+            }
+        }
         extent = radius * 2
         vertexCount = vertices.count
         buffer = vertices.withUnsafeBytes { raw in
@@ -165,11 +174,8 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         // centred and fills the view, whatever the angle; zoom then multiplies on top
         var lowX = Float.greatestFiniteMagnitude, highX = -Float.greatestFiniteMagnitude
         var lowY = Float.greatestFiniteMagnitude, highY = -Float.greatestFiniteMagnitude
-        for i in 0..<8 {
-            let corner = SIMD4<Float>(i & 1 == 0 ? boundsLow.x : boundsHigh.x,
-                                      i & 2 == 0 ? boundsLow.y : boundsHigh.y,
-                                      i & 4 == 0 ? boundsLow.z : boundsHigh.z, 1)
-            let p = base * corner
+        for point in fitPoints {
+            let p = base * SIMD4<Float>(point.x, point.y, point.z, 1)
             guard p.w > 0.0001 else { return base }
             lowX = min(lowX, p.x / p.w); highX = max(highX, p.x / p.w)
             lowY = min(lowY, p.y / p.w); highY = max(highY, p.y / p.w)
