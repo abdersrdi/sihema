@@ -138,10 +138,10 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning && $0.message.contains("Canned") })
     }
 
-    func testCutterCompensationIsReportedOnce() {
+    func testMissingCutterRadiusIsReportedOnce() {
         let tp = run("G41 D1 G01 X1 F100\nG42 G01 X2\nG41 G01 X3\n")
         XCTAssertEqual(tp.segments.count, 3)
-        XCTAssertEqual(tp.diagnostics.filter { $0.message.contains("Cutter radius") }.count, 2)
+        XCTAssertEqual(tp.diagnostics.filter { $0.message.contains("No cutter radius for D1") }.count, 1)
     }
 
     func testArcRadiusMismatchIsReported() {

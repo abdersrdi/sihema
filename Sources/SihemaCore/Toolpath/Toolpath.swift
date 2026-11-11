@@ -35,8 +35,8 @@ public struct ArcGeometry: Sendable {
     public var sweep: Double
 }
 
-/// One motion of the tool: a rapid, a straight feed move or an arc. Coordinates are in millimetres, in the
-/// active work coordinate system (work offsets are not applied yet).
+/// One motion of the tool: a rapid, a straight feed move or an arc. Coordinates are the machine position of the
+/// tool tip in millimetres (work offsets and G92 are applied).
 public struct Segment: Sendable {
     public var kind: SegmentKind
     public var plane: PlaneID
@@ -49,9 +49,16 @@ public struct Segment: Sendable {
     public var tool: Int32
     /// Zero-based source line of the block that produced this move.
     public var line: Int32
+    /// Cutter radius compensation while the program was read: 0 off, 1 left (G41), -1 right (G42).
+    /// Cleared again once the compensation pass has produced the real tool centre path.
+    public var compSide: Int8
+    /// 0 none, 1 start-up block, 2 active, 3 cancel block.
+    public var compPhase: UInt8
+    public var compRadius: Double
 
     public init(kind: SegmentKind, plane: PlaneID, start: SIMD3<Double>, end: SIMD3<Double>,
-                center: SIMD3<Double>, feed: Double, tool: Int32, line: Int32) {
+                center: SIMD3<Double>, feed: Double, tool: Int32, line: Int32,
+                compSide: Int8 = 0, compPhase: UInt8 = 0, compRadius: Double = 0) {
         self.kind = kind
         self.plane = plane
         self.start = start
@@ -60,6 +67,9 @@ public struct Segment: Sendable {
         self.feed = feed
         self.tool = tool
         self.line = line
+        self.compSide = compSide
+        self.compPhase = compPhase
+        self.compRadius = compRadius
     }
 
     /// Valid only for arcs.
@@ -164,6 +174,22 @@ public struct Toolpath: Sendable {
             seconds += s.length / s.feed * 60
         }
         return seconds
+    }
+
+    /// Recomputes lengths and bounds after the segments were replaced.
+    mutating func recomputeTotals() {
+        rapidLength = 0
+        cuttingLength = 0
+        hasBounds = false
+        for s in segments {
+            let length = s.length
+            if s.kind == .rapid { rapidLength += length } else { cuttingLength += length }
+            extend(bounds: s.start)
+            extend(bounds: s.end)
+            if s.kind.isArc {
+                s.forEachLine(tolerance: 0.05) { _, to in extend(bounds: to) }
+            }
+        }
     }
 
     mutating func extend(bounds point: SIMD3<Double>) {

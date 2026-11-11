@@ -32,10 +32,23 @@ func svg(for toolpath: Toolpath) -> String {
 
 var files: [String] = []
 var svgDir: String?
+var config = MachineConfig()
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
     let a = args.removeFirst()
-    if a == "--svg-dir", !args.isEmpty { svgDir = args.removeFirst() } else { files.append(a) }
+    if a == "--svg-dir", !args.isEmpty {
+        svgDir = args.removeFirst()
+    } else if a == "--radii", !args.isEmpty {
+        // for example --radii 1=3,2=5 gives D1 a 3 mm radius and D2 a 5 mm radius
+        for pair in args.removeFirst().split(separator: ",") {
+            let parts = pair.split(separator: "=")
+            if parts.count == 2, let d = Int(parts[0]), let r = Double(parts[1]) { config.cutterRadii[d] = r }
+        }
+    } else if a == "--inches" {
+        config.defaultInches = true
+    } else {
+        files.append(a)
+    }
 }
 
 for path in files {
@@ -44,7 +57,7 @@ for path in files {
         continue
     }
     let tokens = GCodeTokenizer.tokenize(data)
-    let toolpath = FanucInterpreter().run(tokens)
+    let toolpath = FanucInterpreter(config: config).run(tokens)
     let name = (path as NSString).lastPathComponent
     print("## \(name)")
     print("- lines \(tokens.lineCount), words \(tokens.words.count), moves \(toolpath.segments.count) "

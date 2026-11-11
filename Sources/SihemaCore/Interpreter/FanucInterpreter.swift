@@ -26,6 +26,8 @@ public struct MachineConfig: Sendable {
     public var referencePosition = SIMD3<Double>(repeating: 0)
     /// Machine position reached by G30.
     public var secondReferencePosition = SIMD3<Double>(repeating: 0)
+    /// Cutter radius for each offset number D, in mm. G41/G42 need an entry for the D they use.
+    public var cutterRadii: [Int: Double] = [:]
 
     public init() {}
 }
@@ -80,6 +82,9 @@ public final class FanucInterpreter {
         }
         runner.tp.finalPosition = runner.pos
         runner.tp.endedByProgramEnd = runner.finished
+        if runner.usedComp {
+            CutterCompensation.apply(&runner.tp, maxDiagnostics: config.maxDiagnostics)
+        }
         return runner.tp
     }
 
@@ -166,6 +171,14 @@ private struct Runner {
     var offsets: [Int: SIMD3<Double>]
     var activeOffset = 54
     var g92Shift = SIMD3<Double>(repeating: 0)
+
+    // cutter radius compensation
+    var compSide: Int8 = 0
+    var compRadius = 0.0
+    var compStartPending = false
+    var compCancelPending = false
+    var usedComp = false
+    var lastD = 0
     var shift: SIMD3<Double> { (offsets[activeOffset] ?? SIMD3<Double>(repeating: 0)) + g92Shift }
     var labels: [Int: [Int]] = [:]
     var programLines: [Int: Int] = [:]
@@ -426,6 +439,9 @@ private struct Runner {
         var nonModal = 0
         var isMacroCall = false
         var selectExtended = false
+        var pendingSide: Int8 = 0
+        var cancelComp = false
+        var dWord: Int?
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
@@ -447,14 +463,17 @@ private struct Runner {
             case 911: arcCenterAbsolute = false
             case 940: feedPerRev = false
             case 950: feedPerRev = true
-            case 400, 490: break
+            case 490: break
+            case 400:
+                cancelComp = true
             case 540, 550, 560, 570, 580, 590:
                 activeOffset = code / 10
             case 541, 1540:
                 selectExtended = true
-            case 410, 420:
-                noteOnce(code, line: line, .warning,
-                         "Cutter radius compensation (G41/G42) is not applied yet; the path shown is the programmed path")
+            case 410:
+                pendingSide = 1
+            case 420:
+                pendingSide = -1
             case 430, 440:
                 noteOnce(code, line: line, .info,
                          "Tool length compensation (G43/G44) is read but does not change the tool tip path shown")
@@ -519,6 +538,8 @@ private struct Runner {
                 rawP = w.value; pHadDecimal = w.hadDecimal
             case 76 where w.hasValueFlag: // L
                 rawL = w.value
+            case 68 where w.hasValueFlag: // D
+                dWord = Int(w.value.rounded())
             case 65, 66, 67: // A B C
                 if !isMacroCall {
                     noteOnce(10005, line: line, .info, "Rotary axes (A, B, C) are ignored in Phase 1")
@@ -540,6 +561,20 @@ private struct Runner {
             activeOffset = 1000 + Int(p.rounded())
         }
         let none = SIMD3<Double>(repeating: 0)
+
+        if pendingSide != 0 {
+            let d = dWord ?? lastD
+            lastD = d
+            if let radius = config.cutterRadii[d], radius > 0 {
+                if compSide == 0 { compStartPending = true }
+                compSide = pendingSide
+                compRadius = radius
+            } else {
+                noteOnce(20000 + d, line: line, .warning,
+                         "No cutter radius for D\(d) in the tool table, so cutter radius compensation is skipped")
+            }
+        }
+        if cancelComp && compSide != 0 { compCancelPending = true }
 
         switch nonModal {
         case 40: // dwell
@@ -687,7 +722,27 @@ private struct Runner {
             return
         }
 
-        tp.segments.append(segment)
+        var tagged = segment
+        if compSide != 0 && compRadius > 0 {
+            let ax = segment.plane.axes
+            let du = segment.end[ax.a0] - segment.start[ax.a0]
+            let dv = segment.end[ax.a1] - segment.start[ax.a1]
+            let planar = segment.kind.isArc || du * du + dv * dv > 1e-18
+            tagged.compSide = compSide
+            tagged.compRadius = compRadius
+            if planar && compStartPending {
+                tagged.compPhase = 1
+                compStartPending = false
+            } else if planar && compCancelPending {
+                tagged.compPhase = 3
+                compCancelPending = false
+                compSide = 0
+            } else {
+                tagged.compPhase = 2
+            }
+            usedComp = true
+        }
+        tp.segments.append(tagged)
         let length = segment.length
         if segment.kind == .rapid { tp.rapidLength += length } else { tp.cuttingLength += length }
 
