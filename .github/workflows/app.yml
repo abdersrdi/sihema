@@ -1,0 +1,71 @@
+name: App
+
+# Manual only: macOS runners cost ten times the minutes on a private repo.
+# Builds the Mac and iOS apps and runs the benchmark on Apple Silicon.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain and GPU
+        run: |
+          xcodebuild -version
+          system_profiler SPDisplaysDataType | head -20 || true
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build macOS app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Sihema.xcodeproj \
+            -scheme Sihema-macOS \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build-mac.log
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)['devices']
+          phones = [d for runtime, devs in sorted(data.items()) if 'iOS' in runtime for d in devs if d['name'].startswith('iPhone')]
+          print(phones[-1]['udid'])
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build iOS app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Sihema.xcodeproj \
+            -scheme Sihema-iOS \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build-ios.log
+
+      - name: Benchmark on Apple Silicon
+        run: |
+          swift run -c release SihemaBench --lines 1000000 --dexel-moves 20000 | tee bench-mac.md
+          cat bench-mac.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-logs
+          path: |
+            build-mac.log
+            build-ios.log
+            bench-mac.md

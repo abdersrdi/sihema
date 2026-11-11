@@ -1,0 +1,35 @@
+name: Core
+
+# Runs on Linux, which costs a tenth of macOS minutes on a private repo. The core package has no
+# Apple-only imports on purpose.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-and-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+      - name: Benchmark (1 million lines)
+        run: swift run -c release SihemaBench --lines 1000000 --dexel-moves 20000 | tee bench-linux.md
+
+      - name: Show benchmark in the run summary
+        run: cat bench-linux.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-linux
+          path: bench-linux.md

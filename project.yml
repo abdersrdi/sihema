@@ -1,0 +1,90 @@
+name: Sihema
+
+options:
+  bundleIdPrefix: dev.sihema
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+
+packages:
+  SihemaCore:
+    path: .
+
+targets:
+  Sihema-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/Shared
+    dependencies:
+      - package: SihemaCore
+        product: SihemaCore
+    settings:
+      base:
+        # Phase 0 spike identifiers. The final bundle ID is decided before the App Store record is created.
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sihema.spike
+        PRODUCT_NAME: Sihema
+        CODE_SIGN_STYLE: Automatic
+    entitlements:
+      path: App/macOS/Sihema.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+    info:
+      path: App/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Sihema
+        LSMinimumSystemVersion: "14.0"
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: G-code program
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.plain-text
+              - public.data
+
+  Sihema-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Shared
+    dependencies:
+      - package: SihemaCore
+        product: SihemaCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.sihema.spike
+        PRODUCT_NAME: Sihema
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: App/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Sihema
+        UILaunchScreen: {}
+        UISupportsDocumentBrowser: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: G-code program
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.plain-text
+              - public.data
