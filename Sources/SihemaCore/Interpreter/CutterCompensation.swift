@@ -34,7 +34,9 @@ private struct Prim {
 private func offset(_ p: Prim, side: Double, r: Double) -> Prim? {
     if !p.isArc {
         let t = p.tangent(atEnd: false)
-        let n = V2(-t.y, t.x) * (side * r)
+        let distance: Double = side * r
+        let normal = V2(-t.y, t.x)
+        let n = V2(normal.x * distance, normal.y * distance)
         var q = p
         q.p0 = p.p0 + n
         q.p1 = p.p1 + n
