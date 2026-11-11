@@ -18,6 +18,14 @@ public struct MachineConfig: Sendable {
     public var maxExecutedBlocks = 20_000_000
     /// Deepest nesting of subprogram and macro calls.
     public var maxCallDepth = 32
+    /// Machine position of each work zero G54-G59 (keys 54-59), in mm. Missing entries are zero.
+    public var workOffsets: [Int: SIMD3<Double>] = [:]
+    /// Extra work offsets for G54.1 P1.. (Fanuc) and G154 P1.. (Haas), keyed by P.
+    public var extendedWorkOffsets: [Int: SIMD3<Double>] = [:]
+    /// Machine position reached by G28.
+    public var referencePosition = SIMD3<Double>(repeating: 0)
+    /// Machine position reached by G30.
+    public var secondReferencePosition = SIMD3<Double>(repeating: 0)
 
     public init() {}
 }
@@ -153,6 +161,12 @@ private struct Runner {
     var callStack: [CallFrame] = []
     var vars = MacroVariables()
     var alarmMessage: String?
+
+    // coordinate systems: `pos` is always the machine position of the tool tip
+    var offsets: [Int: SIMD3<Double>]
+    var activeOffset = 54
+    var g92Shift = SIMD3<Double>(repeating: 0)
+    var shift: SIMD3<Double> { (offsets[activeOffset] ?? SIMD3<Double>(repeating: 0)) + g92Shift }
     var labels: [Int: [Int]] = [:]
     var programLines: [Int: Int] = [:]
     var loopEnd: [Int: Int] = [:]
@@ -163,6 +177,9 @@ private struct Runner {
         self.pos = config.startPosition
         self.motion = config.initialMotionLinear ? .linear : .none
         self.inches = config.defaultInches
+        var table = config.workOffsets
+        for (p, value) in config.extendedWorkOffsets { table[1000 + p] = value }
+        self.offsets = table
         indexProgram(program)
     }
 
@@ -234,7 +251,7 @@ private struct Runner {
     // MARK: Macro lines
 
     mutating func executeMacroLine(line: Int, program: TokenizedProgram) {
-        vars.position = pos
+        vars.position = pos - shift
         let parser = MacroParser(program.lineBytes(line), vars: vars)
         var words: [GCodeWord] = []
         do {
@@ -408,6 +425,7 @@ private struct Runner {
         var newMotion = motion
         var nonModal = 0
         var isMacroCall = false
+        var selectExtended = false
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
@@ -429,12 +447,19 @@ private struct Runner {
             case 911: arcCenterAbsolute = false
             case 940: feedPerRev = false
             case 950: feedPerRev = true
-            case 400, 490, 540, 550, 560, 570, 580, 590: break
+            case 400, 490: break
+            case 540, 550, 560, 570, 580, 590:
+                activeOffset = code / 10
+            case 541, 1540:
+                selectExtended = true
             case 410, 420:
                 noteOnce(code, line: line, .warning,
                          "Cutter radius compensation (G41/G42) is not applied yet; the path shown is the programmed path")
             case 430, 440:
-                noteOnce(code, line: line, .info, "Tool length compensation (G43/G44) is not applied yet")
+                noteOnce(code, line: line, .info,
+                         "Tool length compensation (G43/G44) is read but does not change the tool tip path shown")
+            case 100, 280, 300, 530, 920, 921:
+                nonModal = code
             case 650:
                 nonModal = 650
                 isMacroCall = true
@@ -444,9 +469,6 @@ private struct Runner {
                 noteOnce(10004, line: line, .warning,
                          "Canned cycles (G81-G89) are not simulated yet; their moves are skipped")
                 newMotion = .none
-            case 280, 530, 920:
-                nonModal = code
-                noteOnce(code, line: line, .info, "\(gName(code)) is not simulated yet and is skipped")
             default:
                 noteOnce(code, line: line, .info, "\(gName(code)) is not supported yet and is ignored")
             }
@@ -514,13 +536,72 @@ private struct Runner {
             }
         }
 
-        if nonModal == 40 {
+        if selectExtended, let p = rawP {
+            activeOffset = 1000 + Int(p.rounded())
+        }
+        let none = SIMD3<Double>(repeating: 0)
+
+        switch nonModal {
+        case 40: // dwell
             if let x = rawX {
                 tp.dwellSeconds += x
             } else if let p = rawP {
                 tp.dwellSeconds += pHadDecimal ? p : p / 1000
             }
-        } else if nonModal == 0 {
+
+        case 100: // G10 L2 Pn: set a work offset (machine position of the work zero)
+            let l = Int((rawL ?? 0).rounded())
+            if l == 2 || l == 20, let p = rawP {
+                let index = Int(p.rounded()) >= 1 && Int(p.rounded()) <= 6 ? 53 + Int(p.rounded()) : activeOffset
+                var value = offsets[index] ?? none
+                for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
+                    value[k] = l == 2 ? axisValue[k] : value[k] + axisValue[k]
+                }
+                offsets[index] = value
+            } else {
+                noteOnce(10020, line: line, .info, "Only G10 L2 and L20 (work offsets) are supported; other G10 forms are ignored")
+            }
+
+        case 920: // G92: the current position gets new coordinates
+            for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
+                g92Shift[k] = pos[k] - (offsets[activeOffset] ?? none)[k] - axisValue[k]
+            }
+
+        case 921: // G92.1 cancels the shift
+            g92Shift = none
+
+        case 280, 300: // return to a reference position through an intermediate point
+            let reference = nonModal == 280 ? config.referencePosition : config.secondReferencePosition
+            let mask: UInt8 = axisMask == 0 ? 7 : axisMask
+            var middle = pos
+            for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
+                middle[k] = absolute ? axisValue[k] + shift[k] : pos[k] + axisValue[k]
+            }
+            var home = middle
+            for k in 0..<3 where mask & (1 << UInt8(k)) != 0 { home[k] = reference[k] }
+            let saved = motion
+            motion = .rapid
+            if middle != pos {
+                move(line: line, target: middle, offset: none, offsetMask: 0, radius: 0, hasRadius: false)
+            }
+            if home != pos {
+                move(line: line, target: home, offset: none, offsetMask: 0, radius: 0, hasRadius: false)
+            }
+            motion = saved
+
+        case 530: // G53: one block in machine coordinates
+            let moving = (newMotion == .rapid || newMotion == .linear) ? newMotion
+                : ((motion == .rapid || motion == .linear) ? motion : .rapid)
+            if axisMask != 0 {
+                var target = pos
+                for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 { target[k] = axisValue[k] }
+                let saved = motion
+                motion = moving
+                move(line: line, target: target, offset: none, offsetMask: 0, radius: 0, hasRadius: false)
+                motion = saved
+            }
+
+        case 0:
             motion = newMotion
             let isArc = motion == .arcCW || motion == .arcCCW
             let hasWork = axisMask != 0 || (isArc && (offsetMask != 0 || hasRadius))
@@ -529,14 +610,18 @@ private struct Runner {
                     noteOnce(10001, line: line, .warning,
                              "Axis words without an active motion mode (G00-G03) are ignored")
                 } else {
+                    let currentShift = shift
                     var target = pos
                     for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
-                        target[k] = absolute ? axisValue[k] : pos[k] + axisValue[k]
+                        target[k] = absolute ? axisValue[k] + currentShift[k] : pos[k] + axisValue[k]
                     }
                     move(line: line, target: target, offset: offset, offsetMask: offsetMask,
                          radius: radius, hasRadius: hasRadius)
                 }
             }
+
+        default:
+            break
         }
 
         if isMacroCall, let p = macroArgs[80] {
@@ -648,7 +733,7 @@ private struct Runner {
             }
             for k in [ax.a0, ax.a1] {
                 let value = offsetMask & (1 << UInt8(k)) != 0 ? offset[k] : 0
-                center[k] = arcCenterAbsolute ? value : pos[k] + value
+                center[k] = arcCenterAbsolute ? value + shift[k] : pos[k] + value
             }
         }
         center[ax.h] = pos[ax.h]
