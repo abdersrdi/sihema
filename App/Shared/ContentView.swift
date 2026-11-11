@@ -11,6 +11,8 @@ struct ContentView: View {
                 .tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
             ToolpathView(analysis: analysis)
                 .tabItem { Label("Path", systemImage: "scribble.variable") }
+            CompareView(baseText: document.text)
+                .tabItem { Label("Compare", systemImage: "rectangle.split.2x1") }
             ReportView(analysis: analysis)
                 .tabItem { Label("Report", systemImage: "list.bullet.rectangle") }
         }
