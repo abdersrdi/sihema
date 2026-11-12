@@ -9,7 +9,7 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
 
@@ -42,6 +42,8 @@ targets:
       path: App/macOS/Info.plist
       properties:
         CFBundleDisplayName: Sihema
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.developer-tools
         ITSAppUsesNonExemptEncryption: false
@@ -95,6 +97,8 @@ targets:
       path: App/iOS/Info.plist
       properties:
         CFBundleDisplayName: Sihema
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UISupportsDocumentBrowser: true
