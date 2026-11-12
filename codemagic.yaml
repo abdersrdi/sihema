@@ -36,7 +36,8 @@ workflows:
       - name: Install XcodeGen
         script: brew install xcodegen
       - name: Use the Codemagic build number
-        script: sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
+        script: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
       - name: Generate Xcode project
         script: xcodegen generate
       - name: Set up keychain
@@ -92,7 +93,8 @@ workflows:
       - name: Install XcodeGen
         script: brew install xcodegen
       - name: Use the Codemagic build number
-        script: sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
+        script: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
       - name: Generate Xcode project
         script: xcodegen generate
       - name: Set up keychain
