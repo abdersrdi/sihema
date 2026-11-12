@@ -14,6 +14,8 @@ workflows:
       groups:
         - VoiceInvoice
       vars:
+        # Numeric Apple ID of the app in App Store Connect.
+        APP_STORE_APPLE_ID: "6834008627"
         APP_BUNDLE_ID: com.sihema.app
     scripts:
       - name: Prepare the certificate key
@@ -75,6 +77,8 @@ workflows:
       groups:
         - VoiceInvoice
       vars:
+        # Numeric Apple ID of the app in App Store Connect.
+        APP_STORE_APPLE_ID: "6834008627"
         APP_BUNDLE_ID: com.sihema.app
     scripts:
       - name: Prepare the certificate key
