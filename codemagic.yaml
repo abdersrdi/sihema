@@ -1,0 +1,140 @@
+# Codemagic: signed TestFlight builds of Sihema for iPhone/iPad and for the Mac. Both are started by hand.
+#
+# Needs the variable group "VoiceInvoice" (the same Apple account): APP_STORE_CONNECT_ISSUER_ID,
+# APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_PRIVATE_KEY and CERTIFICATE_PRIVATE_KEY.
+# The build number is the Codemagic build number, so every upload is higher than the last.
+
+workflows:
+  ios-testflight:
+    name: iOS and iPadOS TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      groups:
+        - VoiceInvoice
+      vars:
+        APP_BUNDLE_ID: cc.sihema.app
+    scripts:
+      - name: Prepare the certificate key
+        script: |
+          #!/usr/bin/env bash
+          for name in APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_KEY_IDENTIFIER APP_STORE_CONNECT_PRIVATE_KEY CERTIFICATE_PRIVATE_KEY; do
+            value="${!name}"
+            if [ -z "$value" ]; then echo "MISSING: $name"; else echo "$name is set (${#value} characters)"; fi
+          done
+          [ -n "${CERTIFICATE_PRIVATE_KEY:-}" ] || { echo "ERROR: CERTIFICATE_PRIVATE_KEY is not defined"; exit 1; }
+          KEY_FILE="$HOME/certificate_key.pem"
+          if printf '%s' "$CERTIFICATE_PRIVATE_KEY" | grep -q -- '-----BEGIN'; then
+            printf '%s\n' "$CERTIFICATE_PRIVATE_KEY" > "$KEY_FILE"
+          else
+            printf '%s' "$CERTIFICATE_PRIVATE_KEY" | base64 -D > "$KEY_FILE" || { echo "ERROR: the certificate key could not be decoded"; exit 1; }
+          fi
+          chmod 600 "$KEY_FILE"
+          openssl rsa -in "$KEY_FILE" -check -noout || { echo "ERROR: not a valid RSA key"; exit 1; }
+          echo "CERTIFICATE_KEY_FILE=$KEY_FILE" >> "$CM_ENV"
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Use the Codemagic build number
+        script: sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
+      - name: Generate Xcode project
+        script: xcodegen generate
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch signing files
+        script: |
+          app-store-connect fetch-signing-files "$APP_BUNDLE_ID" \
+            --type IOS_APP_STORE --create \
+            --certificate-key=@file:$CERTIFICATE_KEY_FILE
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+      - name: Apply provisioning profiles
+        script: xcode-project use-profiles
+      - name: Build signed ipa
+        script: |
+          xcode-project build-ipa \
+            --project "Sihema.xcodeproj" \
+            --scheme "Sihema-iOS"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
+
+  mac-testflight:
+    name: macOS TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      groups:
+        - VoiceInvoice
+      vars:
+        APP_BUNDLE_ID: cc.sihema.app
+    scripts:
+      - name: Prepare the certificate key
+        script: |
+          #!/usr/bin/env bash
+          [ -n "${CERTIFICATE_PRIVATE_KEY:-}" ] || { echo "ERROR: CERTIFICATE_PRIVATE_KEY is not defined"; exit 1; }
+          KEY_FILE="$HOME/certificate_key.pem"
+          if printf '%s' "$CERTIFICATE_PRIVATE_KEY" | grep -q -- '-----BEGIN'; then
+            printf '%s\n' "$CERTIFICATE_PRIVATE_KEY" > "$KEY_FILE"
+          else
+            printf '%s' "$CERTIFICATE_PRIVATE_KEY" | base64 -D > "$KEY_FILE" || { echo "ERROR: the certificate key could not be decoded"; exit 1; }
+          fi
+          chmod 600 "$KEY_FILE"
+          openssl rsa -in "$KEY_FILE" -check -noout || { echo "ERROR: not a valid RSA key"; exit 1; }
+          echo "CERTIFICATE_KEY_FILE=$KEY_FILE" >> "$CM_ENV"
+      - name: Install XcodeGen
+        script: brew install xcodegen
+      - name: Use the Codemagic build number
+        script: sed -i '' "s/CURRENT_PROJECT_VERSION: \"1\"/CURRENT_PROJECT_VERSION: \"$BUILD_NUMBER\"/" project.yml
+      - name: Generate Xcode project
+        script: xcodegen generate
+      - name: Set up keychain
+        script: keychain initialize
+      - name: Fetch the Mac App Store profile and application certificate
+        script: |
+          app-store-connect fetch-signing-files "$APP_BUNDLE_ID" \
+            --platform MAC_OS --type MAC_APP_STORE --create \
+            --certificate-key=@file:$CERTIFICATE_KEY_FILE
+      - name: Fetch the installer certificate
+        script: |
+          app-store-connect certificates list --type MAC_INSTALLER_DISTRIBUTION \
+            --certificate-key=@file:$CERTIFICATE_KEY_FILE --save \
+          || app-store-connect certificates create --type MAC_INSTALLER_DISTRIBUTION \
+            --certificate-key=@file:$CERTIFICATE_KEY_FILE --save
+      - name: Add certificates to keychain
+        script: keychain add-certificates
+      - name: Apply provisioning profiles
+        script: xcode-project use-profiles
+      - name: Archive the app
+        script: |
+          xcodebuild archive \
+            -project Sihema.xcodeproj \
+            -scheme Sihema-macOS \
+            -destination 'generic/platform=macOS' \
+            -archivePath build/Sihema.xcarchive \
+            2>&1 | tee /tmp/xcodebuild_mac.log
+      - name: Make the signed installer package
+        script: |
+          APP=$(find build/Sihema.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -1)
+          echo "App: $APP"
+          mkdir -p build/pkg
+          xcrun productbuild --component "$APP" /Applications build/pkg/unsigned.pkg
+          INSTALLER=$(security find-identity -v | grep -i "3rd Party Mac Developer Installer\|Mac Installer Distribution" | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          echo "Installer identity: $INSTALLER"
+          xcrun productsign --sign "$INSTALLER" build/pkg/unsigned.pkg build/pkg/Sihema.pkg
+    artifacts:
+      - build/pkg/*.pkg
+      - /tmp/xcodebuild_mac.log
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
