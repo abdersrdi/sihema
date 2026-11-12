@@ -130,11 +130,11 @@ workflows:
         script: |
           APP=$(find build/Sihema.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -1)
           echo "App: $APP"
-          mkdir -p build/pkg
-          xcrun productbuild --component "$APP" /Applications build/pkg/unsigned.pkg
+          mkdir -p build/pkg /tmp/unsigned
+          xcrun productbuild --component "$APP" /Applications /tmp/unsigned/unsigned.pkg
           INSTALLER=$(security find-identity -v | grep -i "3rd Party Mac Developer Installer\|Mac Installer Distribution" | head -1 | sed -E 's/.*"(.*)".*/\1/')
           echo "Installer identity: $INSTALLER"
-          xcrun productsign --sign "$INSTALLER" build/pkg/unsigned.pkg build/pkg/Sihema.pkg
+          xcrun productsign --sign "$INSTALLER" /tmp/unsigned/unsigned.pkg build/pkg/Sihema.pkg
     artifacts:
       - build/pkg/*.pkg
       - /tmp/xcodebuild_mac.log
