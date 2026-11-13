@@ -195,6 +195,25 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("Scaling") })
     }
 
+    func testAssignmentWithoutBracketsIsAnExpression() {
+        let tp = run("#101=0\nWHILE[#101 LT 3] DO1\n#101=#101+1\nEND1\nG01 X[#101] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 3, accuracy: 1e-9)
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("Stopped after") })
+    }
+
+    func testUnbracketedArithmeticKeepsPrecedence() {
+        let tp = run("#1=2+3*4\n#2=#1/2-1\nG01 X#1 Y#2 F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 14, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments.last?.end.y ?? 0, 6, accuracy: 1e-9)
+    }
+
+    func testG52LocalShiftMovesTheWorkOrigin() {
+        let tp = run("G52 X10 Y5\nG01 X1 Y1 F100\nG52 X0 Y0\nG01 X1 Y1\n")
+        XCTAssertEqual(tp.segments[0].end.x, 11, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[0].end.y, 6, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].end.x, 1, accuracy: 1e-9)
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)

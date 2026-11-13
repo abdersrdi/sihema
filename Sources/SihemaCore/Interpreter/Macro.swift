@@ -163,6 +163,32 @@ final class MacroParser {
         try vars.write(reference, value)
     }
 
+    /// The right-hand side of `#n = ...`. Fanuc wants brackets around an expression, but Haas and many other
+    /// controls accept `#1=#1+1` and `#2=#3*2` as they are, so a value followed by an operator is read as one.
+    /// A bare value stays as it is, so a vacant variable is still vacant.
+    func parseAssignedValue() throws -> Double? {
+        let start = index
+        let value = try parseOperand()
+        skipSpace()
+        var continues = false
+        if let c = peek() {
+            if c == 43 || c == 45 || c == 42 || c == 47 {
+                continues = true
+            } else {
+                let op = peekAlphaRun()
+                continues = ["AND", "OR", "XOR", "MOD"].contains(op)
+            }
+        }
+        guard continues else { return value }
+        index = start
+        return try parseExpressionToEnd()
+    }
+
+    /// An unbracketed expression: arithmetic and logic, no comparisons (those need brackets).
+    private func parseExpressionToEnd() throws -> Double {
+        try parseExpression()
+    }
+
     // MARK: Values
 
     /// Number, variable, bracketed expression, function or signed value. Nil means a vacant variable.

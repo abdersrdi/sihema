@@ -15,7 +15,7 @@ public struct MachineConfig: Sendable {
     /// Units used until the program says G20 or G21. Controllers set this with a parameter.
     public var defaultInches = false
     /// Safety stop for endless loops, in executed blocks.
-    public var maxExecutedBlocks = 20_000_000
+    public var maxExecutedBlocks = 5_000_000
     /// Deepest nesting of subprogram and macro calls.
     public var maxCallDepth = 32
     /// Machine position of each work zero G54-G59 (keys 54-59), in mm. Missing entries are zero.
@@ -183,6 +183,7 @@ private struct Runner {
     var offsets: [Int: SIMD3<Double>]
     var activeOffset = 54
     var g92Shift = SIMD3<Double>(repeating: 0)
+    var localShift = SIMD3<Double>(repeating: 0) // G52
 
     // cutter radius compensation
     var compSide: Int8 = 0
@@ -205,7 +206,7 @@ private struct Runner {
     var cycleHasZ = false
     /// G80 hands the G00-G03 mode back, so the line after it still moves the way it did before the cycle.
     var motionBeforeCycle: Motion = .none
-    var shift: SIMD3<Double> { (offsets[activeOffset] ?? SIMD3<Double>(repeating: 0)) + g92Shift }
+    var shift: SIMD3<Double> { (offsets[activeOffset] ?? SIMD3<Double>(repeating: 0)) + g92Shift + localShift }
     var labels: [Int: [Int]] = [:]
     var programLines: [Int: Int] = [:]
     var loopEnd: [Int: Int] = [:]
@@ -325,7 +326,7 @@ private struct Runner {
                 p.skipSpace()
                 guard p.peek() == 61 else { throw MacroError("Expected = after a variable") }
                 p.advance()
-                let value = try p.parseOperand()
+                let value = try p.parseAssignedValue()
                 try p.assign(reference, value)
                 continue
             }
@@ -513,7 +514,9 @@ private struct Runner {
                 noteOnce(code, line: line, .info, "Scaling (G51) is not simulated; the path is drawn at full size")
             case 610, 611, 620, 630, 640, 641:
                 break // exact stop and path blending modes change timing on the machine, not the geometry
-            case 100, 280, 300, 530, 920, 921:
+            case 50, 51, 690, 960, 970:
+                break // high-speed modes, spindle speed modes, rotation cancel: no geometry to change
+            case 100, 280, 300, 520, 530, 920, 921:
                 nonModal = code
             case 650:
                 nonModal = 650
@@ -664,6 +667,9 @@ private struct Runner {
             for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
                 g92Shift[k] = pos[k] - (offsets[activeOffset] ?? none)[k] - axisValue[k]
             }
+
+        case 520: // G52: local coordinate system, shifted from the active work offset
+            for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 { localShift[k] = axisValue[k] }
 
         case 921: // G92.1 cancels the shift
             g92Shift = none
