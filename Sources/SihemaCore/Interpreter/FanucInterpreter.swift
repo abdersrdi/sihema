@@ -184,6 +184,12 @@ private struct Runner {
     var activeOffset = 54
     var g92Shift = SIMD3<Double>(repeating: 0)
     var localShift = SIMD3<Double>(repeating: 0) // G52
+    // G68 coordinate rotation, in the plane that was active when it was switched on
+    var rotActive = false
+    var rotPlane = PlaneID.xy
+    var rotCenter = SIMD2<Double>(repeating: 0) // work coordinates, in the rotation plane's two axes
+    var rotAngle = 0.0 // degrees, counter-clockwise
+    var inverseTime = false // G93: F is 1/minutes for the whole move
 
     // cutter radius compensation
     var compSide: Int8 = 0
@@ -491,8 +497,11 @@ private struct Runner {
             case 910: absolute = false
             case 901: arcCenterAbsolute = true
             case 911: arcCenterAbsolute = false
-            case 940: feedPerRev = false
-            case 950: feedPerRev = true
+            case 930: inverseTime = true
+            case 940: feedPerRev = false; inverseTime = false
+            case 950: feedPerRev = true; inverseTime = false
+            case 680: nonModal = 680
+            case 690: rotActive = false
             case 400:
                 cancelComp = true
             case 540, 550, 560, 570, 580, 590:
@@ -514,7 +523,7 @@ private struct Runner {
                 noteOnce(code, line: line, .info, "Scaling (G51) is not simulated; the path is drawn at full size")
             case 610, 611, 620, 630, 640, 641:
                 break // exact stop and path blending modes change timing on the machine, not the geometry
-            case 50, 51, 690, 960, 970:
+            case 50, 51, 960, 970:
                 break // high-speed modes, spindle speed modes, rotation cancel: no geometry to change
             case 100, 280, 300, 520, 530, 920, 921:
                 nonModal = code
@@ -668,6 +677,26 @@ private struct Runner {
                 g92Shift[k] = pos[k] - (offsets[activeOffset] ?? none)[k] - axisValue[k]
             }
 
+        case 680: // G68: rotate the programmed coordinates about a centre in the current plane
+            if !hasRadius {
+                noteOnce(10015, line: line, .warning, "G68 needs an angle (R); rotation is not switched on")
+            } else {
+                let ax = plane.axes
+                let current = programmedPoint(fromMachine: pos)
+                var centre = SIMD2<Double>(current[ax.a0], current[ax.a1])
+                if axisMask & (1 << UInt8(ax.a0)) != 0 {
+                    centre.x = absolute ? axisValue[ax.a0] : centre.x + axisValue[ax.a0]
+                }
+                if axisMask & (1 << UInt8(ax.a1)) != 0 {
+                    centre.y = absolute ? axisValue[ax.a1] : centre.y + axisValue[ax.a1]
+                }
+                let angle = radius / scale // the angle is not a length, so undo the inch scaling
+                rotAngle = (!absolute && rotActive) ? rotAngle + angle : angle
+                rotCenter = centre
+                rotPlane = plane
+                rotActive = true
+            }
+
         case 520: // G52: local coordinate system, shifted from the active work offset
             for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 { localShift[k] = axisValue[k] }
 
@@ -727,8 +756,16 @@ private struct Runner {
                     let repeats = max(1, Int((rawL ?? rawK ?? 1).rounded()))
                     for _ in 0..<repeats {
                         var xy = pos
-                        for k in 0..<2 where axisMask & (1 << UInt8(k)) != 0 {
-                            xy[k] = absolute ? axisValue[k] + shift[k] : pos[k] + axisValue[k]
+                        if rotActive {
+                            var programmed = programmedPoint(fromMachine: pos)
+                            for k in 0..<2 where axisMask & (1 << UInt8(k)) != 0 {
+                                programmed[k] = absolute ? axisValue[k] : programmed[k] + axisValue[k]
+                            }
+                            xy = machinePoint(fromProgrammed: programmed)
+                        } else {
+                            for k in 0..<2 where axisMask & (1 << UInt8(k)) != 0 {
+                                xy[k] = absolute ? axisValue[k] + shift[k] : pos[k] + axisValue[k]
+                            }
                         }
                         drillHole(line: line, x: xy.x, y: xy.y)
                     }
@@ -746,10 +783,23 @@ private struct Runner {
                 } else {
                     let currentShift = shift
                     var target = pos
-                    for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
-                        target[k] = absolute ? axisValue[k] + currentShift[k] : pos[k] + axisValue[k]
+                    var arcOffset = offset
+                    if rotActive {
+                        var programmed = programmedPoint(fromMachine: pos)
+                        for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
+                            programmed[k] = absolute ? axisValue[k] : programmed[k] + axisValue[k]
+                        }
+                        target = machinePoint(fromProgrammed: programmed)
+                        let ax = rotPlane.axes
+                        let turned = rotated(SIMD2<Double>(offset[ax.a0], offset[ax.a1]), by: rotAngle)
+                        arcOffset[ax.a0] = turned.x
+                        arcOffset[ax.a1] = turned.y
+                    } else {
+                        for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
+                            target[k] = absolute ? axisValue[k] + currentShift[k] : pos[k] + axisValue[k]
+                        }
                     }
-                    move(line: line, target: target, offset: offset, offsetMask: offsetMask,
+                    move(line: line, target: target, offset: arcOffset, offsetMask: offsetMask,
                          radius: radius, hasRadius: hasRadius)
                 }
             }
@@ -790,6 +840,37 @@ private struct Runner {
             return feedValue * spindle
         }
         return feedValue
+    }
+
+    /// A 2D vector turned counter-clockwise by an angle in degrees.
+    func rotated(_ v: SIMD2<Double>, by degrees: Double) -> SIMD2<Double> {
+        let a = degrees * Double.pi / 180
+        let c = cos(a), s = sin(a)
+        return SIMD2<Double>(v.x * c - v.y * s, v.x * s + v.y * c)
+    }
+
+    /// Where a programmed point (work coordinates, before any G68 rotation) is on the machine.
+    func machinePoint(fromProgrammed p: SIMD3<Double>) -> SIMD3<Double> {
+        var w = p
+        if rotActive {
+            let ax = rotPlane.axes
+            let turned = rotated(SIMD2<Double>(p[ax.a0] - rotCenter.x, p[ax.a1] - rotCenter.y), by: rotAngle)
+            w[ax.a0] = rotCenter.x + turned.x
+            w[ax.a1] = rotCenter.y + turned.y
+        }
+        return w + shift
+    }
+
+    /// The programmed (unrotated, work coordinate) point for a machine position.
+    func programmedPoint(fromMachine m: SIMD3<Double>) -> SIMD3<Double> {
+        var w = m - shift
+        if rotActive {
+            let ax = rotPlane.axes
+            let turned = rotated(SIMD2<Double>(w[ax.a0] - rotCenter.x, w[ax.a1] - rotCenter.y), by: -rotAngle)
+            w[ax.a0] = rotCenter.x + turned.x
+            w[ax.a1] = rotCenter.y + turned.y
+        }
+        return w
     }
 
     /// One straight move that belongs to a canned cycle, drawn in the given mode.
@@ -883,6 +964,13 @@ private struct Runner {
         }
 
         var tagged = segment
+        if inverseTime && segment.kind != .rapid {
+            // G93: F is moves per minute, so the speed is the length of the move times F
+            if feedValue <= 0 {
+                noteOnce(10016, line: line, .warning, "Inverse time feed (G93) needs an F word on every move")
+            }
+            tagged.feed = segment.length * (inches ? feedValue / 25.4 : feedValue)
+        }
         if compSide != 0 && compRadius > 0 {
             let ax = segment.plane.axes
             let du = segment.end[ax.a0] - segment.start[ax.a0]

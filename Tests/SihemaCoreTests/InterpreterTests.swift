@@ -214,6 +214,47 @@ final class InterpreterTests: XCTestCase {
         XCTAssertEqual(tp.segments[1].end.x, 1, accuracy: 1e-9)
     }
 
+    func testG68RotatesAboutTheOrigin() {
+        let tp = run("G17 G90\nG68 X0 Y0 R90\nG01 X10 Y0 F100\nG69\nG01 X10 Y0\n")
+        XCTAssertEqual(tp.segments[0].end.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[0].end.y, 10, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].end.x, 10, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].end.y, 0, accuracy: 1e-9)
+    }
+
+    func testG68RotatesAboutAnotherCentre() {
+        let tp = run("G17 G90\nG68 X10 Y10 R90\nG01 X20 Y10 F100\n")
+        XCTAssertEqual(tp.segments[0].end.x, 10, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[0].end.y, 20, accuracy: 1e-9)
+    }
+
+    func testG68TurnsIncrementalMovesAndArcCentres() {
+        let tp = run("G17 G90\nG68 X0 Y0 R90\nG01 X10 Y0 F100\nG91 G01 X10\nG90 G00 X10 Y0\nG03 X0 Y10 I-10 J0\n")
+        XCTAssertEqual(tp.segments[1].end.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].end.y, 20, accuracy: 1e-9)
+        let arc = tp.segments.last!
+        XCTAssertEqual(arc.center.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(arc.center.y, 0, accuracy: 1e-9)
+        XCTAssertEqual(arc.end.x, -10, accuracy: 1e-9)
+    }
+
+    func testG68WithoutAngleWarns() {
+        let tp = run("G68 X0 Y0\nG01 X10 F100\n")
+        XCTAssertEqual(tp.segments[0].end.x, 10, accuracy: 1e-9)
+        XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("G68") })
+    }
+
+    func testG93InverseTimeFeedUsesTheMoveLength() {
+        let tp = run("G93\nG01 X10 F2\nG94\nG01 X20 F300\n")
+        XCTAssertEqual(tp.segments[0].feed, 20, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].feed, 300, accuracy: 1e-9)
+    }
+
+    func testG93InInches() {
+        let tp = run("G20 G93\nG01 X1 F2\n")
+        XCTAssertEqual(tp.segments[0].feed, 50.8, accuracy: 1e-9)
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)
