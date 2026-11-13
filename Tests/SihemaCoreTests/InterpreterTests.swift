@@ -132,10 +132,32 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.endedByProgramEnd)
     }
 
-    func testCannedCycleIsReportedAndSkipped() {
-        let tp = run("G81 X1 Y1 Z-5 R2 F100\n")
-        XCTAssertEqual(tp.segments.count, 0)
-        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning && $0.message.contains("Canned") })
+    func testG81DrillsAndReturnsToInitialLevel() {
+        let tp = run("G21 G90 G00 Z10\nG98 G81 X5 Y5 Z-5 R2 F100\nG80\n")
+        let cuts = tp.segments.filter { $0.kind == .linear }
+        XCTAssertEqual(cuts.count, 1)
+        XCTAssertEqual(cuts[0].start.z, 2, accuracy: 1e-9)
+        XCTAssertEqual(cuts[0].end.z, -5, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments.last?.end.z ?? 0, 10, accuracy: 1e-9)
+    }
+
+    func testG99ReturnsToRPlane() {
+        let tp = run("G90 G00 Z10\nG99 G81 X5 Y5 Z-5 R2 F100\nX10\nG80\n")
+        XCTAssertEqual(tp.segments.filter { $0.kind == .linear }.count, 2)
+        XCTAssertEqual(tp.segments.last?.end.z ?? 0, 2, accuracy: 1e-9)
+    }
+
+    func testG83PecksInSteps() {
+        let tp = run("G90 G00 Z10\nG83 X0 Y0 Z-9 R2 Q4 F100\nG80\n")
+        let cuts = tp.segments.filter { $0.kind == .linear }
+        XCTAssertEqual(cuts.count, 3)
+        XCTAssertEqual(cuts.last?.end.z ?? 0, -9, accuracy: 1e-9)
+    }
+
+    func testG80KeepsEarlierMotionMode() {
+        let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments.last?.kind, .linear)
     }
 
     func testMissingCutterRadiusIsReportedOnce() {

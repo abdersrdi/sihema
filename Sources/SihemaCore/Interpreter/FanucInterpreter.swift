@@ -30,6 +30,10 @@ public struct MachineConfig: Sendable {
     public var cutterRadii: [Int: Double] = [:]
     /// Machine travel in machine coordinates. When set, moves outside it are reported.
     public var travelLimits: TravelLimits?
+    /// G83: how far above the previous depth the drill rapids back down to after a full retract, in mm.
+    public var peckClearanceMM = 1.0
+    /// G73: how far the drill backs off between pecks to break the chip, in mm.
+    public var chipBreakRetractMM = 1.0
 
     public init() {}
 }
@@ -186,6 +190,20 @@ private struct Runner {
     var compCancelPending = false
     var usedComp = false
     var lastD = 0
+
+    // canned cycles (G73 G74 G76 G81-G89): 0 means none is active
+    var cannedCode = 0
+    /// G98 returns to the level the cycle started from, G99 only to the R plane.
+    var returnToInitial = true
+    var cycleInitialZ = 0.0
+    var cycleR = 0.0
+    var cycleZ = 0.0
+    var cycleQ = 0.0
+    var cycleDwell = 0.0
+    var cycleHasR = false
+    var cycleHasZ = false
+    /// G80 hands the G00-G03 mode back, so the line after it still moves the way it did before the cycle.
+    var motionBeforeCycle: Motion = .none
     var shift: SIMD3<Double> { (offsets[activeOffset] ?? SIMD3<Double>(repeating: 0)) + g92Shift }
     var labels: [Int: [Int]] = [:]
     var programLines: [Int: Int] = [:]
@@ -449,15 +467,18 @@ private struct Runner {
         var pendingSide: Int8 = 0
         var cancelComp = false
         var dWord: Int?
+        var explicitMotion = false
+        var cancelCycle = false
+        var cycleSelect = 0
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
             let code = Int((w.value * 10).rounded())
             switch code {
-            case 0: newMotion = .rapid
-            case 10: newMotion = .linear
-            case 20: newMotion = .arcCW
-            case 30: newMotion = .arcCCW
+            case 0: newMotion = .rapid; explicitMotion = true
+            case 10: newMotion = .linear; explicitMotion = true
+            case 20: newMotion = .arcCW; explicitMotion = true
+            case 30: newMotion = .arcCCW; explicitMotion = true
             case 40: nonModal = 40
             case 170: plane = .xy
             case 180: plane = .zx
@@ -490,14 +511,31 @@ private struct Runner {
                 nonModal = 650
                 isMacroCall = true
             case 800:
-                newMotion = .none
-            case 810...890:
-                noteOnce(10004, line: line, .warning,
-                         "Canned cycles (G81-G89) are not simulated yet; their moves are skipped")
-                newMotion = .none
+                cancelCycle = true
+            case 730, 740, 760, 810, 820, 830, 840, 850, 860, 870, 880, 890:
+                cycleSelect = code / 10
+                if code == 760 || code == 870 || code == 880 {
+                    noteOnce(10011, line: line, .info,
+                             "\(gName(code)) is drawn like G86 (feed in, rapid out); its spindle orientation and tool shift are not simulated")
+                }
+            case 980:
+                returnToInitial = true
+            case 990:
+                returnToInitial = false
             default:
                 noteOnce(code, line: line, .info, "\(gName(code)) is not supported yet and is ignored")
             }
+        }
+
+        // A G00-G03 word ends a canned cycle; G80 ends it and hands the earlier motion mode back.
+        if explicitMotion { cannedCode = 0 }
+        if cancelCycle {
+            if cannedCode != 0 { motion = motionBeforeCycle; newMotion = motion }
+            cannedCode = 0
+        }
+        if cycleSelect != 0 {
+            if cannedCode == 0 { cycleInitialZ = pos.z; motionBeforeCycle = motion }
+            cannedCode = cycleSelect
         }
 
         // Pass 2: everything else.
@@ -511,6 +549,8 @@ private struct Runner {
         var rawX: Double?
         var rawP: Double?
         var rawL: Double?
+        var rawK: Double?
+        var rawQ: Double?
         var pHadDecimal = false
         var programEnd = false
         var callSub = false
@@ -532,7 +572,9 @@ private struct Runner {
             case 74 where w.hasValueFlag: // J
                 offset.y = w.value * scale; offsetMask |= 2
             case 75 where w.hasValueFlag: // K
-                offset.z = w.value * scale; offsetMask |= 4
+                offset.z = w.value * scale; offsetMask |= 4; rawK = w.value
+            case 81 where w.hasValueFlag: // Q
+                rawQ = w.value * scale
             case 82 where w.hasValueFlag: // R
                 radius = w.value * scale; hasRadius = true
             case 70 where w.hasValueFlag: // F
@@ -645,6 +687,36 @@ private struct Runner {
                 motion = saved
             }
 
+        case 0 where cannedCode != 0:
+            let zShift = shift.z
+            if hasRadius {
+                cycleR = absolute ? radius + zShift : cycleInitialZ + radius
+                cycleHasR = true
+            }
+            if axisMask & 4 != 0 {
+                cycleZ = absolute ? axisValue.z + zShift : cycleR + axisValue.z
+                cycleHasZ = true
+            }
+            if let q = rawQ { cycleQ = abs(q) }
+            if let p = rawP { cycleDwell = pHadDecimal ? p : p / 1000 }
+            if axisMask & 3 != 0 {
+                if plane != .xy {
+                    noteOnce(10012, line: line, .warning, "Canned cycles are only simulated in the XY plane (G17)")
+                } else if !cycleHasR || !cycleHasZ {
+                    noteOnce(10013, line: line, .warning,
+                             "Canned cycle without an R plane or a Z depth; the hole is skipped")
+                } else {
+                    let repeats = max(1, Int((rawL ?? rawK ?? 1).rounded()))
+                    for _ in 0..<repeats {
+                        var xy = pos
+                        for k in 0..<2 where axisMask & (1 << UInt8(k)) != 0 {
+                            xy[k] = absolute ? axisValue[k] + shift[k] : pos[k] + axisValue[k]
+                        }
+                        drillHole(line: line, x: xy.x, y: xy.y)
+                    }
+                }
+            }
+
         case 0:
             motion = newMotion
             let isArc = motion == .arcCW || motion == .arcCCW
@@ -700,6 +772,63 @@ private struct Runner {
             return feedValue * spindle
         }
         return feedValue
+    }
+
+    /// One straight move that belongs to a canned cycle, drawn in the given mode.
+    mutating func cycleMove(line: Int, to target: SIMD3<Double>, rapid: Bool) {
+        if target == pos { return }
+        let saved = motion
+        motion = rapid ? .rapid : .linear
+        move(line: line, target: target, offset: SIMD3<Double>(repeating: 0), offsetMask: 0,
+             radius: 0, hasRadius: false)
+        motion = saved
+    }
+
+    /// Runs the active canned cycle at one X/Y position, using the stored R plane, Z depth and Q.
+    mutating func drillHole(line: Int, x: Double, y: Double) {
+        let r = cycleR, z = cycleZ
+        func at(_ height: Double) -> SIMD3<Double> { SIMD3<Double>(x, y, height) }
+
+        cycleMove(line: line, to: at(pos.z), rapid: true)
+        cycleMove(line: line, to: at(r), rapid: true)
+
+        let sign: Double = z >= r ? 1 : -1
+        switch cannedCode {
+        case 73, 83:
+            let peck = cycleQ > 0 ? cycleQ : abs(z - r)
+            var current = r
+            while abs(z - current) > 1e-9 {
+                let next = current + sign * min(peck, abs(z - current))
+                cycleMove(line: line, to: at(next), rapid: false)
+                if abs(z - next) > 1e-9 {
+                    if cannedCode == 83 {
+                        cycleMove(line: line, to: at(r), rapid: true)
+                        let back = next - sign * config.peckClearanceMM
+                        // never rapid past the previous depth
+                        cycleMove(line: line, to: at(sign > 0 ? min(back, next) : max(back, next)), rapid: true)
+                    } else {
+                        cycleMove(line: line, to: at(next - sign * config.chipBreakRetractMM), rapid: true)
+                    }
+                }
+                current = next
+            }
+        default:
+            cycleMove(line: line, to: at(z), rapid: false)
+        }
+
+        if cycleDwell > 0 && (cannedCode == 82 || cannedCode == 89 || cannedCode == 84 || cannedCode == 74) {
+            tp.dwellSeconds += cycleDwell
+        }
+
+        switch cannedCode {
+        case 84, 74, 85, 89:
+            cycleMove(line: line, to: at(r), rapid: false) // feed out
+        default:
+            cycleMove(line: line, to: at(r), rapid: true)
+        }
+        if returnToInitial {
+            cycleMove(line: line, to: at(max(cycleInitialZ, r)), rapid: true)
+        }
     }
 
     mutating func move(line: Int, target: SIMD3<Double>, offset: SIMD3<Double>, offsetMask: UInt8,
