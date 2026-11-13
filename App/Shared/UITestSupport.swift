@@ -6,12 +6,14 @@ import SihemaCore
 ///   SIHEMA_UITEST=1        open the sample program
 ///   SIHEMA_TAB=<name>      start on a tab: code, path, compare or report
 ///   SIHEMA_SIMULATE=1      run the material removal automatically on the report tab
+///   SIHEMA_PROGRAM=<path>  open this G-code file instead of the sample program
 enum UITestSupport {
     static let environment = ProcessInfo.processInfo.environment
 
     static var isDirect: Bool { environment["SIHEMA_UITEST"] != nil }
     static var simulate: Bool { environment["SIHEMA_SIMULATE"] != nil }
     static var tab: String? { environment["SIHEMA_TAB"] }
+    static var programPath: String? { environment["SIHEMA_PROGRAM"] }
 }
 
 /// Machine settings used until the app has a machine profile screen.
@@ -26,7 +28,14 @@ enum AppDefaults {
 
 enum DemoPrograms {
     /// A pocket with a WHILE loop, a profile with cutter compensation, and a subprogram call.
-    static let main = """
+    static var main: String {
+        if let path = UITestSupport.programPath, let text = try? String(contentsOfFile: path, encoding: .utf8) {
+            return text
+        }
+        return builtIn
+    }
+
+    static let builtIn = """
     %
     O1000 (SIHEMA DEMO - POCKET AND PROFILE)
     N10 G21 G90 G17 G94 G40 G49 G80
@@ -70,7 +79,7 @@ enum DemoPrograms {
 
     /// The same program edited: one feed changed, one line removed, one line added, and some formatting-only edits.
     static var compareOther: String {
-        main
+        builtIn
             .replacingOccurrences(of: "G01 X50 F900", with: "G01 X50 F1100")
             .replacingOccurrences(of: "G01 Y40\n", with: "")
             .replacingOccurrences(of: "G01 X10\n", with: "g1 x10.0\n")
