@@ -43,14 +43,21 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     private var buffer: MTLBuffer?
-    private var vertexCount = 0
+    private var cutCount = 0
+    private var rapidCount = 0
+    private var referenceBuffer: MTLBuffer?
+    private var referenceCount = 0
     private var center = SIMD3<Float>(repeating: 0)
     private var extent: Float = 1
-    private var fitPoints: [SIMD3<Float>] = []
+    private var extentCut: Float = 1
+    private var fitAll: [SIMD3<Float>] = []
+    private var fitCut: [SIMD3<Float>] = []
 
     var yaw: Float = -0.6
     var pitch: Float = 0.6
     var zoom: Float = 1
+    var showRapids = true
+    var showReference = true
 
     init?(view: MTKView) {
         guard let device = view.device ?? MTLCreateSystemDefaultDevice(),
@@ -78,59 +85,107 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     func load(_ toolpath: Toolpath?) {
         guard let toolpath, !toolpath.segments.isEmpty else {
             buffer = nil
-            vertexCount = 0
+            referenceBuffer = nil
+            cutCount = 0
+            rapidCount = 0
+            referenceCount = 0
             return
         }
-        let low = Self.float3(toolpath.boundsMin)
-        let high = Self.float3(toolpath.boundsMax)
-        center = (low + high) / 2
-        let size = high - low
-        extent = max((size * size).sum().squareRoot(), 1)
-
         let rapidColor = SIMD4<Float>(0.45, 0.72, 0.93, 1)   // glacier blue
         let cutColor = SIMD4<Float>(0.96, 0.82, 0.86, 1)     // pale burgundy tint
-        let tolerance = max(0.01, Double(extent) * 2e-4)
+        let low = Self.float3(toolpath.boundsMin)
+        let high = Self.float3(toolpath.boundsMax)
+        let tolerance = max(0.01, Double((high - low).max()) * 2e-4)
 
-        var vertices: [Vertex] = []
-        vertices.reserveCapacity(toolpath.segments.count * 2)
+        var cuts: [Vertex] = []
+        var rapids: [Vertex] = []
+        cuts.reserveCapacity(toolpath.segments.count * 2)
         for segment in toolpath.segments {
-            let color = segment.kind == .rapid ? rapidColor : cutColor
+            let isRapid = segment.kind == .rapid
+            let color = isRapid ? rapidColor : cutColor
             segment.forEachLine(tolerance: tolerance) { a, b in
-                vertices.append(Vertex(position: Self.float3(a), color: color))
-                vertices.append(Vertex(position: Self.float3(b), color: color))
+                let first = Vertex(position: Self.float3(a), color: color)
+                let second = Vertex(position: Self.float3(b), color: color)
+                if isRapid {
+                    rapids.append(first); rapids.append(second)
+                } else {
+                    cuts.append(first); cuts.append(second)
+                }
             }
         }
-        // centre on the cutting moves (a tall rapid retract would pull the view upwards), then fit every vertex
-        var cutLow = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-        var cutHigh = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        for vertex in vertices where vertex.color == cutColor {
-            cutLow = simd_min(cutLow, vertex.position)
-            cutHigh = simd_max(cutHigh, vertex.position)
+        let all = cuts + rapids
+        if all.isEmpty {
+            buffer = nil
+            referenceBuffer = nil
+            cutCount = 0; rapidCount = 0; referenceCount = 0
+            return
         }
-        if cutLow.x <= cutHigh.x { center = (cutLow + cutHigh) / 2 }
-        var radius: Float = 0.5
-        var allLow = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
-        var allHigh = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
-        for vertex in vertices {
-            radius = max(radius, simd_length(vertex.position - center))
-            allLow = simd_min(allLow, vertex.position)
-            allHigh = simd_max(allHigh, vertex.position)
+
+        func bounds(_ list: [Vertex]) -> (SIMD3<Float>, SIMD3<Float>) {
+            var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
+            var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
+            for v in list {
+                lo = simd_min(lo, v.position)
+                hi = simd_max(hi, v.position)
+            }
+            return (lo, hi)
         }
         // points used to fit the view: an even sample plus the vertex at each extreme of every axis
         // (a bounding box would over-estimate: its corners are not part of the path)
-        fitPoints.removeAll(keepingCapacity: true)
-        let stride = max(1, vertices.count / 4000)
-        for i in Swift.stride(from: 0, to: vertices.count, by: stride) { fitPoints.append(vertices[i].position) }
-        for axis in 0..<3 {
-            if let low = vertices.min(by: { $0.position[axis] < $1.position[axis] }),
-               let high = vertices.max(by: { $0.position[axis] < $1.position[axis] }) {
-                fitPoints.append(low.position)
-                fitPoints.append(high.position)
+        func fitPoints(_ list: [Vertex]) -> [SIMD3<Float>] {
+            var points: [SIMD3<Float>] = []
+            let step = max(1, list.count / 4000)
+            for i in Swift.stride(from: 0, to: list.count, by: step) { points.append(list[i].position) }
+            for axis in 0..<3 {
+                if let lo = list.min(by: { $0.position[axis] < $1.position[axis] }),
+                   let hi = list.max(by: { $0.position[axis] < $1.position[axis] }) {
+                    points.append(lo.position)
+                    points.append(hi.position)
+                }
             }
+            return points
         }
+
+        // centre on the cutting moves (a tall rapid retract would pull the view upwards), then fit every vertex
+        let (cutLow, cutHigh) = cuts.isEmpty ? bounds(all) : bounds(cuts)
+        center = (cutLow + cutHigh) / 2
+        var radius: Float = 0.5
+        for vertex in all { radius = max(radius, simd_length(vertex.position - center)) }
+        var radiusCut: Float = 0.5
+        for vertex in (cuts.isEmpty ? all : cuts) { radiusCut = max(radiusCut, simd_length(vertex.position - center)) }
         extent = radius * 2
-        vertexCount = vertices.count
-        buffer = vertices.withUnsafeBytes { raw in
+        extentCut = radiusCut * 2
+        fitAll = fitPoints(all)
+        fitCut = cuts.isEmpty ? fitAll : fitPoints(cuts)
+
+        cutCount = cuts.count
+        rapidCount = rapids.count
+        buffer = all.withUnsafeBytes { raw in
+            device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
+        }
+
+        // reference lines: an axis triad at the low corner of the cut, and the cut's bounding box
+        var reference: [Vertex] = []
+        func line(_ a: SIMD3<Float>, _ b: SIMD3<Float>, _ color: SIMD4<Float>) {
+            reference.append(Vertex(position: a, color: color))
+            reference.append(Vertex(position: b, color: color))
+        }
+        let size = cutHigh - cutLow
+        let boxColor = SIMD4<Float>(0.32, 0.32, 0.38, 1)
+        let corners: [SIMD3<Float>] = (0..<8).map { i in
+            SIMD3<Float>(i & 1 == 0 ? cutLow.x : cutHigh.x,
+                         i & 2 == 0 ? cutLow.y : cutHigh.y,
+                         i & 4 == 0 ? cutLow.z : cutHigh.z)
+        }
+        for i in 0..<8 {
+            for bit in [1, 2, 4] where i & bit == 0 { line(corners[i], corners[i | bit], boxColor) }
+        }
+        let arm = max(size.max() * 0.25, 1)
+        line(cutLow, cutLow + SIMD3<Float>(arm, 0, 0), SIMD4<Float>(0.95, 0.3, 0.3, 1))   // X
+        line(cutLow, cutLow + SIMD3<Float>(0, arm, 0), SIMD4<Float>(0.4, 0.85, 0.4, 1))    // Y
+        line(cutLow, cutLow + SIMD3<Float>(0, 0, arm), SIMD4<Float>(1, 0.75, 0.2, 1))      // Z
+        referenceCount = reference.count
+        referenceBuffer = reference.withUnsafeBytes { raw in
             device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
         }
     }
@@ -163,7 +218,8 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
 
     private func mvp(aspect: Float) -> simd_float4x4 {
         // a narrow (portrait) view sees less sideways, so back off further to keep the whole path in frame
-        let distance = extent * 1.5 / min(1, max(aspect, 0.3))
+        let ext = showRapids ? extent : extentCut
+        let distance = ext * 1.5 / min(1, max(aspect, 0.3))
         let direction = SIMD3<Float>(cosf(pitch) * sinf(yaw), -cosf(pitch) * cosf(yaw), sinf(pitch))
         let eye = center + direction * distance
         let view = lookAt(eye: eye, center: center, up: SIMD3<Float>(0, 0, 1))
@@ -174,7 +230,7 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         // centred and fills the view, whatever the angle; zoom then multiplies on top
         var lowX = Float.greatestFiniteMagnitude, highX = -Float.greatestFiniteMagnitude
         var lowY = Float.greatestFiniteMagnitude, highY = -Float.greatestFiniteMagnitude
-        for point in fitPoints {
+        for point in (showRapids ? fitAll : fitCut) {
             let p = base * SIMD4<Float>(point.x, point.y, point.z, 1)
             guard p.w > 0.0001 else { return base }
             lowX = min(lowX, p.x / p.w); highX = max(highX, p.x / p.w)
@@ -201,12 +257,21 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
               let drawable = view.currentDrawable,
               let commands = queue.makeCommandBuffer(),
               let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
-        if let buffer, vertexCount > 0 {
+        if let buffer, cutCount + rapidCount > 0 {
             var matrix = mvp(aspect: Float(view.drawableSize.width / max(view.drawableSize.height, 1)))
             encoder.setRenderPipelineState(pipeline)
-            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             encoder.setVertexBytes(&matrix, length: MemoryLayout<simd_float4x4>.stride, index: 1)
-            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: vertexCount)
+            if showReference, let referenceBuffer, referenceCount > 0 {
+                encoder.setVertexBuffer(referenceBuffer, offset: 0, index: 0)
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: referenceCount)
+            }
+            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+            if rapidCount > 0 && showRapids {
+                encoder.drawPrimitives(type: .line, vertexStart: cutCount, vertexCount: rapidCount)
+            }
+            if cutCount > 0 {
+                encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: cutCount)
+            }
         }
         encoder.endEncoding()
         commands.present(drawable)
