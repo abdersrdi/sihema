@@ -266,13 +266,13 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
             lowY = min(lowY, p.y / p.w); highY = max(highY, p.y / p.w)
         }
         let width = max(highX - lowX, 1e-4), height = max(highY - lowY, 1e-4)
-        let scale = min(1.8 / width, 1.8 / height) * max(zoom, 0.05)
+        let scale = min(1.5 / width, 1.5 / height) * max(zoom, 0.05)
         let cx = (lowX + highX) / 2, cy = (lowY + highY) / 2
         let fit = simd_float4x4(columns: (
             SIMD4<Float>(scale, 0, 0, 0),
             SIMD4<Float>(0, scale, 0, 0),
             SIMD4<Float>(0, 0, 1, 0),
-            SIMD4<Float>(-scale * cx, -scale * cy, 0, 1)
+            SIMD4<Float>(-scale * cx, -scale * cy + 0.06, 0, 1)
         ))
         return fit * base
     }
