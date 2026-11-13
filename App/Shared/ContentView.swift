@@ -5,10 +5,21 @@ struct ContentView: View {
     @Binding var document: GCodeDocument
     @State private var analysis: Analysis?
     @State private var selection = UITestSupport.tab ?? "code"
+    @State private var jump: JumpRequest?
+
+    /// Lines with errors or warnings, tinted in the editor, and the line the user jumped to.
+    private var marks: EditorMarks {
+        var problems: [Int: Int] = [:]
+        for d in analysis?.toolpath.diagnostics ?? [] where d.severity != .info {
+            let rank = d.severity == .error ? 2 : 1
+            problems[d.line] = max(problems[d.line] ?? 0, rank)
+        }
+        return EditorMarks(problems: problems, focus: jump?.line)
+    }
 
     var body: some View {
         TabView(selection: $selection) {
-            CodeEditorView(text: $document.text)
+            CodeEditorView(text: $document.text, marks: marks, jump: jump)
                 .tabItem { Label("Code", systemImage: "chevron.left.forwardslash.chevron.right") }
                 .tag("code")
             ToolpathView(analysis: analysis)
@@ -17,9 +28,15 @@ struct ContentView: View {
             CompareView(baseText: document.text)
                 .tabItem { Label("Compare", systemImage: "rectangle.split.2x1") }
                 .tag("compare")
-            ReportView(analysis: analysis)
+            ReportView(analysis: analysis) { line in
+                jump = JumpRequest(line: line)
+                selection = "code"
+            }
                 .tabItem { Label("Report", systemImage: "list.bullet.rectangle") }
                 .tag("report")
+        }
+        .onAppear {
+            if let line = UITestSupport.jumpLine { jump = JumpRequest(line: line) }
         }
         .task(id: document.text) {
             // wait for typing to pause, then analyse off the main thread

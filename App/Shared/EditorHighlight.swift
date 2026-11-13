@@ -8,6 +8,19 @@ import UIKit
 typealias PlatformColor = UIColor
 #endif
 
+/// Lines to tint in the editor: problems found by the interpreter (zero-based line -> 2 error, 1 warning) and the
+/// line the user jumped to from the report.
+struct EditorMarks: Equatable {
+    var problems: [Int: Int] = [:]
+    var focus: Int?
+}
+
+/// A request to scroll the editor to a line. A new `id` is a new request, even for the same line.
+struct JumpRequest: Equatable {
+    let id = UUID()
+    let line: Int
+}
+
 /// Colours the lines on screen using TextKit 2 rendering attributes. Nothing is written into the text storage,
 /// so the file text, undo and typing are untouched, and only a screenful is ever scanned.
 enum EditorHighlight {
@@ -54,8 +67,32 @@ enum EditorHighlight {
         return NSRange(location: start, length: length)
     }
 
-    /// Colours the whole lines that touch `range`.
-    static func apply(string: NSString, layoutManager: NSTextLayoutManager, range: NSRange) {
+    /// The characters of a zero-based line, including its line break, or nil when the text has fewer lines.
+    static func range(ofLine line: Int, in string: NSString) -> NSRange? {
+        guard line >= 0 else { return nil }
+        var index = 0
+        var location = 0
+        while location < string.length {
+            let found = string.lineRange(for: NSRange(location: location, length: 0))
+            if index == line { return found }
+            index += 1
+            location = NSMaxRange(found)
+            if found.length == 0 { break }
+        }
+        return nil
+    }
+
+    private static func tint(_ kind: Int) -> PlatformColor {
+        switch kind {
+        case 2: return PlatformColor.systemRed.withAlphaComponent(0.20)
+        case 1: return PlatformColor.systemOrange.withAlphaComponent(0.20)
+        default: return PlatformColor.systemBlue.withAlphaComponent(0.22)
+        }
+    }
+
+    /// Colours the whole lines that touch `range`, and tints the lines named in `marks`.
+    static func apply(string: NSString, layoutManager: NSTextLayoutManager, range: NSRange,
+                      marks: EditorMarks = EditorMarks()) {
         guard let content = layoutManager.textContentManager, string.length > 0 else { return }
         let safe = NSIntersectionRange(range, NSRange(location: 0, length: string.length))
         let lines = string.lineRange(for: safe)
@@ -83,6 +120,28 @@ enum EditorHighlight {
 
         guard let wholeRange = textRange(lines) else { return }
         layoutManager.removeRenderingAttribute(.foregroundColor, for: wholeRange)
+        layoutManager.removeRenderingAttribute(.backgroundColor, for: wholeRange)
+        if !marks.problems.isEmpty || marks.focus != nil {
+            // number of the first line in `lines`, then walk the lines that are in it
+            var firstLine = 0
+            var cursor = 0
+            while cursor < lines.location {
+                cursor = NSMaxRange(string.lineRange(for: NSRange(location: cursor, length: 0)))
+                firstLine += 1
+            }
+            var number = firstLine
+            var at = lines.location
+            while at < NSMaxRange(lines) {
+                let found = string.lineRange(for: NSRange(location: at, length: 0))
+                let kind: Int? = (marks.focus == number) ? 3 : marks.problems[number]
+                if let kind, let r = textRange(NSRange(location: found.location, length: found.length)) {
+                    layoutManager.addRenderingAttribute(.backgroundColor, value: tint(kind), for: r)
+                }
+                number += 1
+                at = NSMaxRange(found)
+                if found.length == 0 { break }
+            }
+        }
         for span in SyntaxHighlighter.spans(in: bytes) {
             let from = map[min(span.start, bytes.count)]
             let to = map[min(span.end, bytes.count)]

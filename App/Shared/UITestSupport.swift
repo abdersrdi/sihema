@@ -14,6 +14,8 @@ enum UITestSupport {
     static var simulate: Bool { environment["SIHEMA_SIMULATE"] != nil }
     static var tab: String? { environment["SIHEMA_TAB"] }
     static var programPath: String? { environment["SIHEMA_PROGRAM"] }
+    static var jumpLine: Int? { environment["SIHEMA_JUMP"].flatMap { Int($0) } }
+    static var demoName: String? { environment["SIHEMA_DEMO"] }
     static var playbackProgress: Double? { environment["SIHEMA_PLAYBACK"].flatMap { Double($0) } }
 }
 
@@ -33,8 +35,26 @@ enum DemoPrograms {
         if let path = UITestSupport.programPath, let text = try? String(contentsOfFile: path, encoding: .utf8) {
             return text
         }
-        return builtIn
+        return UITestSupport.demoName == "problems" ? withProblems : builtIn
     }
+
+    /// A short program with an error, warnings and a note, for checking how problems are shown.
+    static let withProblems = """
+    O1 (PROBLEMS)
+    G21 G90 G17
+    T1 M6
+    G43 H1 Z5.
+    G00 X0 Y0
+    G01 X20 Y0
+    G41 D9 G01 X20 Y10 F300
+    G02 X30 Y20
+    G01 X40
+    G83 X10 Y10 Z-10 R2 F100
+    G80
+    G65 P9999
+    M30
+
+    """
 
     static let builtIn = """
     %

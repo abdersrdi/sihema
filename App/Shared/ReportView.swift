@@ -4,6 +4,8 @@ import SihemaCore
 /// Numbers from the core: size of the program, speed, diagnostics, and a first 3-axis material removal run.
 struct ReportView: View {
     let analysis: Analysis?
+    /// Called with a zero-based line when a message is tapped, so the editor can show it.
+    var onSelectLine: (Int) -> Void = { _ in }
 
     @State private var simulationText: String?
     @State private var simulating = false
@@ -38,15 +40,21 @@ struct ReportView: View {
                             .foregroundStyle(.secondary)
                     }
                     ForEach(Array(path.diagnostics.enumerated()), id: \.offset) { _, d in
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: icon(d.severity))
-                                .foregroundStyle(tint(d.severity))
-                                .frame(width: 20)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Line \(d.line + 1)").font(.caption).foregroundStyle(.secondary)
-                                Text(d.message)
+                        Button { onSelectLine(d.line) } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: icon(d.severity))
+                                    .foregroundStyle(tint(d.severity))
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Line \(d.line + 1)").font(.caption).foregroundStyle(.secondary)
+                                    Text(d.message).multilineTextAlignment(.leading)
+                                }
+                                Spacer(minLength: 0)
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Shows this line in the editor")
                     }
                 }
                 if path.hasBounds {
