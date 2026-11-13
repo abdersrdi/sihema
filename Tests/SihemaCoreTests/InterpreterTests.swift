@@ -184,6 +184,17 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("peck") })
     }
 
+    func testToolLengthScalingCancelAndPathModesAreQuiet() {
+        let tp = run("G90 G54 G64 G50 G17 G40 G80 G94 G49\nG00 G43 H1 Z25.\nG61\nG01 X5 F100\n")
+        XCTAssertEqual(tp.segments.count, 2)
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("ignored") || $0.message.contains("Tool length") })
+    }
+
+    func testScalingOnIsReported() {
+        let tp = run("G51 X0 Y0 P2\nG01 X5 F100\n")
+        XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("Scaling") })
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)

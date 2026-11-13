@@ -492,7 +492,6 @@ private struct Runner {
             case 911: arcCenterAbsolute = false
             case 940: feedPerRev = false
             case 950: feedPerRev = true
-            case 490: break
             case 400:
                 cancelComp = true
             case 540, 550, 560, 570, 580, 590:
@@ -503,9 +502,17 @@ private struct Runner {
                 pendingSide = 1
             case 420:
                 pendingSide = -1
-            case 430, 440:
-                noteOnce(code, line: line, .info,
-                         "Tool length compensation (G43/G44) is read but does not change the tool tip path shown")
+            case 430, 440, 490:
+                // Tool length compensation moves the machine so the tool TIP follows the programmed Z. The path
+                // shown is the tip path, which is already the programmed one, so there is nothing to change.
+                break
+            case 500:
+                // G50 on a mill cancels scaling (nothing is ever scaled here); on a lathe it limits spindle speed
+                break
+            case 510:
+                noteOnce(code, line: line, .info, "Scaling (G51) is not simulated; the path is drawn at full size")
+            case 610, 611, 620, 630, 640, 641:
+                break // exact stop and path blending modes change timing on the machine, not the geometry
             case 100, 280, 300, 530, 920, 921:
                 nonModal = code
             case 650:
