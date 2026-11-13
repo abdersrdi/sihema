@@ -42,8 +42,9 @@ public struct MachineConfig: Sendable {
 ///
 /// Supported: G00 G01 G02 G03 (IJK and R, helical, all three planes), G04, G17-G19, G20/G21, G90/G91, G90.1/G91.1,
 /// G94/G95, F S T M words, M2/M30 program end, Macro B (variables, expressions, functions, IF/GOTO, WHILE/DO/END),
-/// subprograms (M98/M99, Haas M97) and macro calls (G65). Recognized but not simulated yet (reported once as
-/// diagnostics): cutter radius compensation, canned cycles, G28/G53/G92, rotary axes.
+/// subprograms (M98/M99, Haas M97), macro calls (G65), cutter radius compensation, G28/G30/G53/G92, work offsets
+/// and canned cycles G73 G74 G81-G89 with G98/G99, R/Z/Q/P and repeat counts (XY plane; G76, G87 and G88 are drawn
+/// as G86). Rotary axes are recognized but not simulated (reported once as a diagnostic).
 public final class FanucInterpreter {
     public var config: MachineConfig
 
@@ -533,6 +534,10 @@ private struct Runner {
             if cannedCode != 0 { motion = motionBeforeCycle; newMotion = motion }
             cannedCode = 0
         }
+        if cannedCode == 0 {
+            // R, Z, Q and P do not survive from one cycle to the next
+            cycleHasR = false; cycleHasZ = false; cycleQ = 0; cycleDwell = 0
+        }
         if cycleSelect != 0 {
             if cannedCode == 0 { cycleInitialZ = pos.z; motionBeforeCycle = motion }
             cannedCode = cycleSelect
@@ -795,7 +800,11 @@ private struct Runner {
         let sign: Double = z >= r ? 1 : -1
         switch cannedCode {
         case 73, 83:
-            let peck = cycleQ > 0 ? cycleQ : abs(z - r)
+            if cycleQ <= 0 {
+                let name = gName(cannedCode * 10)
+                noteOnce(10014, line: line, .warning, "\(name) needs a peck depth (Q); drilled in one pass instead")
+            }
+            let peck = cycleQ > 0 ? max(cycleQ, 0.01) : abs(z - r)
             var current = r
             while abs(z - current) > 1e-9 {
                 let next = current + sign * min(peck, abs(z - current))

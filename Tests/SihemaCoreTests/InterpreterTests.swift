@@ -154,6 +154,36 @@ final class InterpreterTests: XCTestCase {
         XCTAssertEqual(cuts.last?.end.z ?? 0, -9, accuracy: 1e-9)
     }
 
+    func testG82DwellsAtTheBottom() {
+        let tp = run("G90 G00 Z10\nG82 X0 Y0 Z-3 R2 P500 F100\nG80\n")
+        XCTAssertEqual(tp.dwellSeconds, 0.5, accuracy: 1e-9)
+    }
+
+    func testG84TapsInAndFeedsOut() {
+        let tp = run("G90 G00 Z10\nG99 G84 X0 Y0 Z-8 R3 F150\nG80\n")
+        XCTAssertEqual(tp.segments.filter { $0.kind == .linear }.count, 2)
+    }
+
+    func testIncrementalCycleRepeatsAcrossHoles() {
+        let tp = run("G90 G00 Z10\nG91 G99 G81 X5 Z-4 R-8 L3 F100\nG80\n")
+        let cuts = tp.segments.filter { $0.kind == .linear }
+        XCTAssertEqual(cuts.count, 3)
+        XCTAssertEqual(cuts.last?.end.x ?? 0, 15, accuracy: 1e-9)
+        XCTAssertEqual(cuts.last?.end.z ?? 0, -2, accuracy: 1e-9)
+    }
+
+    func testCycleDataDoesNotCarryToTheNextCycle() {
+        let tp = run("G90 G00 Z10\nG81 X0 Y0 Z-3 R2 F100\nG80\nG81 X5 Y5\nG80\n")
+        XCTAssertEqual(tp.segments.filter { $0.kind == .linear }.count, 1)
+        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning })
+    }
+
+    func testPeckCycleWithoutQWarns() {
+        let tp = run("G90 G00 Z10\nG83 X0 Y0 Z-6 R2 F100\nG80\n")
+        XCTAssertEqual(tp.segments.filter { $0.kind == .linear }.count, 1)
+        XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("peck") })
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)
