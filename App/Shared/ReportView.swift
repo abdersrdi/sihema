@@ -20,35 +20,48 @@ struct ReportView: View {
     private var content: some View {
         if let analysis {
             List {
-                Section("Program") {
-                    row("Lines", "\(analysis.lineCount)")
-                    row("Words", "\(analysis.wordCount)")
-                    row("Moves", "\(analysis.toolpath.segments.count)")
-                    row("Cutting length", String(format: "%.1f mm", analysis.toolpath.cuttingLength))
-                    row("Rapid length", String(format: "%.1f mm", analysis.toolpath.rapidLength))
-                    row("Cycle time (with acceleration)", formatTime(analysis.toolpath.cycleTime()))
+                let path = analysis.toolpath
+                Section("Summary") {
+                    row("Cycle time (with acceleration)", formatTime(path.cycleTime()))
+                    row("Cutting length", String(format: "%.1f mm", path.cuttingLength))
+                    row("Rapid length", String(format: "%.1f mm", path.rapidLength))
+                    row("Tool changes", "\(path.toolChanges)")
+                    if path.dwellSeconds > 0 {
+                        row("Dwell", String(format: "%.1f s", path.dwellSeconds))
+                    }
+                    row("Program end", path.endedByProgramEnd ? "M2 / M30" : "None (no M2 or M30)")
+                    row("Lines / moves", "\(analysis.lineCount) / \(path.segments.count)")
                 }
-                Section("Core speed") {
-                    row("Tokenize", String(format: "%.3f s", analysis.tokenizeSeconds))
-                    row("Interpret", String(format: "%.3f s", analysis.interpretSeconds))
+                Section(messagesTitle(path)) {
+                    if path.diagnostics.isEmpty {
+                        Label("Nothing to report", systemImage: "checkmark.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(path.diagnostics.enumerated()), id: \.offset) { _, d in
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: icon(d.severity))
+                                .foregroundStyle(tint(d.severity))
+                                .frame(width: 20)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Line \(d.line + 1)").font(.caption).foregroundStyle(.secondary)
+                                Text(d.message)
+                            }
+                        }
+                    }
                 }
-                Section("Simulation (3-axis, flat 6 mm tool, stock top at Z0)") {
+                if path.hasBounds {
+                    Section("Extent of the path (machine coordinates)") {
+                        extentRow("X", path.boundsMin.x, path.boundsMax.x)
+                        extentRow("Y", path.boundsMin.y, path.boundsMax.y)
+                        extentRow("Z", path.boundsMin.z, path.boundsMax.z)
+                    }
+                }
+                Section("Material removal (3-axis, flat 6 mm tool, stock top at Z0)") {
                     Button(simulating ? "Simulating..." : "Run material removal") {
                         runSimulation(analysis)
                     }
-                    .disabled(simulating || analysis.toolpath.segments.isEmpty)
+                    .disabled(simulating || path.segments.isEmpty)
                     if let simulationText { Text(simulationText).font(.callout.monospaced()) }
-                }
-                Section("Messages (\(analysis.toolpath.diagnostics.count + analysis.toolpath.suppressedDiagnostics))") {
-                    if analysis.toolpath.diagnostics.isEmpty {
-                        Text("Nothing to report.").foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(analysis.toolpath.diagnostics.enumerated()), id: \.offset) { _, d in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Line \(d.line + 1)").font(.caption).foregroundStyle(.secondary)
-                            Text(d.message)
-                        }
-                    }
                 }
             }
         } else {
@@ -57,6 +70,37 @@ struct ReportView: View {
     }
 
     private var automaticRun: String { analysis?.id.uuidString ?? "" }
+
+    private func messagesTitle(_ path: Toolpath) -> String {
+        let errors = path.diagnostics.filter { $0.severity == .error }.count
+        let warnings = path.diagnostics.filter { $0.severity == .warning }.count
+        let hidden = path.suppressedDiagnostics
+        var parts: [String] = []
+        if errors > 0 { parts.append(errors == 1 ? "1 error" : "\(errors) errors") }
+        if warnings > 0 { parts.append(warnings == 1 ? "1 warning" : "\(warnings) warnings") }
+        if hidden > 0 { parts.append("\(hidden) more not shown") }
+        return parts.isEmpty ? "Messages" : "Messages: " + parts.joined(separator: ", ")
+    }
+
+    private func icon(_ severity: Diagnostic.Severity) -> String {
+        switch severity {
+        case .error: return "xmark.octagon.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle"
+        }
+    }
+
+    private func tint(_ severity: Diagnostic.Severity) -> Color {
+        switch severity {
+        case .error: return .red
+        case .warning: return .orange
+        case .info: return .secondary
+        }
+    }
+
+    private func extentRow(_ axis: String, _ low: Double, _ high: Double) -> some View {
+        row(axis, String(format: "%.1f to %.1f  (%.1f mm)", low, high, high - low))
+    }
 
     private func row(_ name: String, _ value: String) -> some View {
         HStack {
@@ -92,10 +136,12 @@ struct ReportView: View {
                     result = DexelSimulator.simulate(toolpath: path, grid: grid,
                                                      defaultTool: EndMill(shape: .flat, radius: 3))
                 }
+                _ = elapsed
+                let volume = result.removedVolume >= 10_000
+                    ? String(format: "%.1f cm3", result.removedVolume / 1000)
+                    : String(format: "%.0f mm3", result.removedVolume)
                 var lines = [
-                    "Grid \(grid.nx) x \(grid.ny) columns at " + String(format: "%.2f mm", cell),
-                    String(format: "Time %.2f s", elapsed.seconds),
-                    String(format: "Removed %.0f mm3", result.removedVolume),
+                    "Material removed: " + volume,
                     "Rapid moves through stock: \(result.rapidMovesThroughStock.count)"
                 ]
                 if !result.rapidMovesThroughStock.isEmpty {
