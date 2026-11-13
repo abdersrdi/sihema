@@ -96,6 +96,7 @@ struct CodeEditorView: UIViewRepresentable {
         textView.smartDashesType = .no
         textView.spellCheckingType = .no
         textView.alwaysBounceVertical = true
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         textView.text = text
         context.coordinator.textView = textView
         context.coordinator.scheduleHighlight(delay: 0.15)

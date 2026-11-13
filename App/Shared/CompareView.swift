@@ -18,6 +18,8 @@ struct CompareView: View {
         let newNumber: Int?
         let oldText: String
         let newText: String
+        /// A removed line and the added line that replaces it, shown on one row.
+        var paired = false
     }
 
     @State private var otherName: String?
@@ -45,7 +47,7 @@ struct CompareView: View {
                     HStack(spacing: 12) {
                         Toggle("Changes only", isOn: $changesOnly).toggleStyle(.switch).fixedSize()
                         Spacer()
-                        Text(changeCount == 0 ? "No differences" : "\(changeCount) changed lines")
+                        Text(changeCount == 0 ? "No differences" : (changeCount == 1 ? "1 change" : "\(changeCount) changes"))
                             .font(.callout.monospacedDigit())
                             .lineLimit(1)
                     }
@@ -74,10 +76,11 @@ struct CompareView: View {
                     HStack(alignment: .top, spacing: 0) {
                         side(number: row.oldNumber, text: row.oldText, tint: row.kind == .removed ? .red : nil)
                         Rectangle().fill(Color.secondary.opacity(0.3)).frame(width: 1)
-                        side(number: row.newNumber, text: row.newText, tint: row.kind == .added ? .green : nil)
+                        side(number: row.newNumber, text: row.newText, tint: (row.kind == .added || row.paired) ? .green : nil)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                 }
                 .listStyle(.plain)
             }
@@ -142,12 +145,41 @@ struct CompareView: View {
                 let diff = ProgramCompare.compare(old: base, new: other)
                 var built: [Row] = []
                 built.reserveCapacity(diff.count)
-                for (index, row) in diff.enumerated() {
+                func make(_ row: DiffRow, id: Int) -> Row {
                     let oldText = row.oldLine.flatMap { $0 < old.count ? old[$0] : nil } ?? ""
                     let newText = row.newLine.flatMap { $0 < new.count ? new[$0] : nil } ?? ""
-                    built.append(Row(id: index, kind: row.kind,
-                                     oldNumber: row.oldLine.map { $0 + 1 }, newNumber: row.newLine.map { $0 + 1 },
-                                     oldText: oldText, newText: newText))
+                    return Row(id: id, kind: row.kind,
+                               oldNumber: row.oldLine.map { $0 + 1 }, newNumber: row.newLine.map { $0 + 1 },
+                               oldText: oldText, newText: newText)
+                }
+                // a run of removed lines straight followed by a run of added lines is an edit: line them up
+                var index = 0
+                while index < diff.count {
+                    if diff[index].kind == .removed {
+                        var removedEnd = index
+                        while removedEnd < diff.count && diff[removedEnd].kind == .removed { removedEnd += 1 }
+                        var addedEnd = removedEnd
+                        while addedEnd < diff.count && diff[addedEnd].kind == .added { addedEnd += 1 }
+                        let removedCount = removedEnd - index
+                        let addedCount = addedEnd - removedEnd
+                        let pairs = min(removedCount, addedCount)
+                        for k in 0..<removedCount {
+                            var row = make(diff[index + k], id: built.count)
+                            if k < pairs {
+                                let added = make(diff[removedEnd + k], id: 0)
+                                row = Row(id: row.id, kind: .removed, oldNumber: row.oldNumber, newNumber: added.newNumber,
+                                          oldText: row.oldText, newText: added.newText, paired: true)
+                            }
+                            built.append(row)
+                        }
+                        for k in pairs..<addedCount {
+                            built.append(make(diff[removedEnd + k], id: built.count))
+                        }
+                        index = addedEnd
+                    } else {
+                        built.append(make(diff[index], id: built.count))
+                        index += 1
+                    }
                 }
                 return built
             }.value
