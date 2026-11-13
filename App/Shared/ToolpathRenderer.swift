@@ -171,7 +171,7 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
             reference.append(Vertex(position: b, color: color))
         }
         let size = cutHigh - cutLow
-        let boxColor = SIMD4<Float>(0.32, 0.32, 0.38, 1)
+        let boxColor = SIMD4<Float>(0.24, 0.24, 0.30, 1)
         let corners: [SIMD3<Float>] = (0..<8).map { i in
             SIMD3<Float>(i & 1 == 0 ? cutLow.x : cutHigh.x,
                          i & 2 == 0 ? cutLow.y : cutHigh.y,

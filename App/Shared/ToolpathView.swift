@@ -67,16 +67,26 @@ struct ToolpathView: View {
                     .accessibilityLabel("\(preset.name) view")
             }
             Divider().frame(height: 16)
-            Toggle("Rapids", isOn: $showRapids)
-            Toggle("Axes", isOn: $showReference)
+            switchButton("Rapids", $showRapids)
+            switchButton("Axes", $showReference)
         }
-        .toggleStyle(.button)
         .buttonStyle(.bordered)
         .controlSize(.small)
         .fixedSize()
         .padding(6)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.top, 8)
+        .environment(\.colorScheme, .dark) // the canvas is dark, so the overlays are too
+    }
+
+    /// A button that is visibly on or off: a check mark and the accent colour when on.
+    private func switchButton(_ title: String, _ isOn: Binding<Bool>) -> some View {
+        Button { isOn.wrappedValue.toggle() } label: {
+            Text(isOn.wrappedValue ? "\u{2713} \(title)" : title)
+        }
+        .tint(isOn.wrappedValue ? Color.accentColor : Color.gray)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn.wrappedValue ? "on" : "off")
     }
 
     private var legend: some View {
@@ -84,14 +94,20 @@ struct ToolpathView: View {
             legendRow(Color(red: 0.96, green: 0.82, blue: 0.86), "Cutting")
             if showRapids { legendRow(Color(red: 0.45, green: 0.72, blue: 0.93), "Rapid") }
             if showReference {
-                Text("X  Y  Z from the low corner of the cut")
-                    .font(.caption2).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("X").foregroundColor(Color(red: 0.95, green: 0.3, blue: 0.3))
+                    Text("Y").foregroundColor(Color(red: 0.4, green: 0.85, blue: 0.4))
+                    Text("Z").foregroundColor(Color(red: 1, green: 0.75, blue: 0.2))
+                    Text("from the low corner of the cut").foregroundStyle(.secondary)
+                }
+                .font(.caption2)
             }
         }
         .font(.caption)
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .padding(8)
+        .environment(\.colorScheme, .dark)
         .allowsHitTesting(false)
     }
 
