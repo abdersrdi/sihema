@@ -304,8 +304,8 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         }
         // the travelled part of the current line, and the marker
         var extra: [Vertex] = [Vertex(position: a.position, color: a.color), Vertex(position: tip, color: a.color)]
-        let arm = max(extent * 0.02, 0.3)
-        let marker = SIMD4<Float>(1, 0.9, 0.3, 1)
+        let arm = max(extent * 0.045, 0.6)
+        let marker = SIMD4<Float>(1, 0.95, 0.2, 1)
         for axis in 0..<3 {
             var offset = SIMD3<Float>(repeating: 0)
             offset[axis] = arm

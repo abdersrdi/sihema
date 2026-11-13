@@ -116,15 +116,6 @@ struct ToolpathView: View {
         .controlSize(.small)
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())
-        .overlay(alignment: .top) {
-            if playbackActive {
-                Text(readout)
-                    .font(.caption.monospacedDigit())
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .offset(y: -26)
-            }
-        }
         .padding(.horizontal, 8).padding(.bottom, 8)
         .environment(\.colorScheme, .dark)
     }
@@ -151,20 +142,29 @@ struct ToolpathView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 6) {
-            ForEach(Self.presets) { preset in
-                Button(preset.name) { look(preset.yaw, preset.pitch) }
-                    .accessibilityLabel("\(preset.name) view")
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                ForEach(Self.presets) { preset in
+                    Button(preset.name) { look(preset.yaw, preset.pitch) }
+                        .accessibilityLabel("\(preset.name) view")
+                }
+                Divider().frame(height: 16)
+                switchButton("Rapids", $showRapids)
+                switchButton("Axes", $showReference)
             }
-            Divider().frame(height: 16)
-            switchButton("Rapids", $showRapids)
-            switchButton("Axes", $showReference)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+            .padding(6)
+            .background(.ultraThinMaterial, in: Capsule())
+
+            if playbackActive {
+                Text(readout)
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .fixedSize()
-        .padding(6)
-        .background(.ultraThinMaterial, in: Capsule())
         .padding(.top, 8)
         .environment(\.colorScheme, .dark) // the canvas is dark, so the overlays are too
     }
