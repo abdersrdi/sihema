@@ -6,9 +6,11 @@ final class ScreenshotTests: XCTestCase {
         continueAfterFailure = true
     }
 
-    private func capture(_ name: String, tab: String, simulate: Bool = false, wait: UInt32 = 5) {
+    private func capture(_ name: String, tab: String, simulate: Bool = false, wait: UInt32 = 5,
+                         playback: String? = nil) {
         let app = XCUIApplication()
         var environment = ["SIHEMA_UITEST": "1", "SIHEMA_TAB": tab]
+        if let playback { environment["SIHEMA_PLAYBACK"] = playback }
         if simulate { environment["SIHEMA_SIMULATE"] = "1" }
         app.launchEnvironment = environment
         app.launch()
@@ -41,6 +43,7 @@ final class ScreenshotTests: XCTestCase {
 
     func testCode() { capture("01-code", tab: "code") }
     func testPath() { capture("02-path", tab: "path") }
+    func testPathPlayback() { capture("06-path-playback", tab: "path", playback: "0.45") }
     func testCompare() { capture("03-compare", tab: "compare") }
     func testReport() { capture("04-report", tab: "report") }
     func testReportWithSimulation() { capture("05-report-simulation", tab: "report", simulate: true, wait: 9) }

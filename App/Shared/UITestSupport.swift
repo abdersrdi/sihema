@@ -14,6 +14,7 @@ enum UITestSupport {
     static var simulate: Bool { environment["SIHEMA_SIMULATE"] != nil }
     static var tab: String? { environment["SIHEMA_TAB"] }
     static var programPath: String? { environment["SIHEMA_PROGRAM"] }
+    static var playbackProgress: Double? { environment["SIHEMA_PLAYBACK"].flatMap { Double($0) } }
 }
 
 /// Machine settings used until the app has a machine profile screen.
