@@ -1019,9 +1019,16 @@ private struct Runner {
             }
             let half = d / 2
             let h2 = radius * radius - half * half
-            if h2 < -1e-6 * max(1, radius * radius) {
+            // CAM posts round R to a few decimals, so an exact half circle often arrives a hair short; machines
+            // accept that, so only a real shortfall (more than 5 microns plus 0.1%) is an error
+            let shortfall = half - abs(radius)
+            if shortfall > 0.005 + 0.001 * half {
                 note(.error, line: line, "Arc radius R is smaller than half the distance between start and end")
                 return nil
+            }
+            if shortfall > 1e-9 {
+                noteOnce(10017, line: line, .info,
+                         "Arc radius R is a little smaller than half the distance (rounding in the program); drawn as a half circle")
             }
             let h = h2 > 0 ? h2.squareRoot() : 0
             let nu = -dv / d

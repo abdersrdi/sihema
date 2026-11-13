@@ -273,6 +273,21 @@ final class InterpreterTests: XCTestCase {
         XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning && $0.message.contains("radius") })
     }
 
+    func testRoundedHalfCircleRadiusIsAccepted() {
+        // R rounded a hair below half the chord, as CAM posts write it: drawn as a half circle, not dropped
+        let tp = run("G00 X0 Y0\nG03 X10 Y0 R4.9999 F100\n")
+        XCTAssertEqual(tp.segments.count, 2)
+        XCTAssertEqual(tp.segments[1].center.x, 5, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[1].center.y, 0, accuracy: 1e-9)
+        XCTAssertFalse(tp.diagnostics.contains { $0.severity == .error })
+    }
+
+    func testRadiusClearlyTooSmallIsStillAnError() {
+        let tp = run("G00 X0 Y0\nG03 X10 Y0 R4.9 F100\n")
+        XCTAssertEqual(tp.segments.count, 1)
+        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .error })
+    }
+
     func testArcErrors() {
         XCTAssertEqual(run("G00 X0 Y0\nG03 X5 Y5\n").segments.count, 1)
         XCTAssertEqual(run("G00 X0 Y0\nG03 X1 Y0 R0.1\n").segments.count, 1)
