@@ -14,6 +14,13 @@ struct ToolpathView: View {
     @State private var baseZoom: Float = 1
     @State private var showRapids = true
     @State private var showReference = true
+    // playback: 0...1 along the length of the path; 1 with nothing playing shows the whole path
+    @State private var progress = 1.0
+    @State private var playing = false
+    @State private var speed = 1.0
+    @State private var segmentEnds: [Double] = []
+
+    private var playbackActive: Bool { playing || progress < 1 }
 
     private func look(_ newYaw: Float, _ newPitch: Float) {
         yaw = newYaw; baseYaw = newYaw
@@ -33,7 +40,8 @@ struct ToolpathView: View {
                     .foregroundStyle(.secondary)
             } else {
                 MetalCanvas(analysis: analysis, yaw: yaw, pitch: pitch, zoom: zoom,
-                            showRapids: showRapids, showReference: showReference)
+                            showRapids: showRapids, showReference: showReference,
+                            playback: playbackActive, progress: Float(progress))
                     .gesture(
                         DragGesture()
                             .onChanged { value in
@@ -54,10 +62,92 @@ struct ToolpathView: View {
                     )
                     .onTapGesture(count: 2) { look(-0.6, 0.6) }
                     .overlay(alignment: .top) { controls }
-                    .overlay(alignment: .bottomLeading) { legend }
+                    .overlay(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            legend
+                            playbackBar
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: analysis?.id) {
+            playing = false
+            progress = UITestSupport.playbackProgress ?? 1
+            var total = 0.0
+            segmentEnds = (analysis?.toolpath.segments ?? []).map { segment in
+                total += segment.length
+                return total
+            }
+        }
+        .task(id: playing) {
+            // one full run takes about 20 seconds at 1x
+            while playing && !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(33))
+                progress = min(1, progress + 0.033 * speed / 20)
+                if progress >= 1 { playing = false }
+            }
+        }
+    }
+
+    private var playbackBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                if !playing && progress >= 1 { progress = 0 }
+                playing.toggle()
+            } label: {
+                Image(systemName: playing ? "pause.fill" : "play.fill").frame(width: 22)
+            }
+            .accessibilityLabel(playing ? "Pause" : "Play")
+            Slider(value: $progress, in: 0...1) { editing in
+                if editing { playing = false }
+            }
+            .accessibilityLabel("Position along the path")
+            Button("\(speedLabel)x") {
+                let steps = [0.5, 1.0, 2.0, 5.0, 10.0]
+                let next = (steps.firstIndex(of: speed) ?? 1) + 1
+                speed = steps[next % steps.count]
+            }
+            .accessibilityLabel("Playback speed")
+            .frame(minWidth: 34)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(alignment: .top) {
+            if playbackActive {
+                Text(readout)
+                    .font(.caption.monospacedDigit())
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .offset(y: -26)
+            }
+        }
+        .padding(.horizontal, 8).padding(.bottom, 8)
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var speedLabel: String {
+        speed == speed.rounded() ? String(Int(speed)) : String(speed)
+    }
+
+    /// The line, kind of move and feed at the playback position.
+    private var readout: String {
+        guard let segments = analysis?.toolpath.segments, !segmentEnds.isEmpty,
+              let total = segmentEnds.last, total > 0, segments.count == segmentEnds.count else { return "" }
+        let target = progress * total
+        var low = 0, high = segmentEnds.count - 1
+        while low < high {
+            let mid = (low + high) / 2
+            if segmentEnds[mid] >= target { high = mid } else { low = mid + 1 }
+        }
+        let segment = segments[low]
+        var text = "Line \(Int(segment.line) + 1)  \(segment.kind == .rapid ? "Rapid" : "Feed")"
+        if segment.feed > 0 { text += "  F\(Int(segment.feed.rounded()))" }
+        if segment.tool > 0 { text += "  T\(segment.tool)" }
+        return text
     }
 
     private var controls: some View {
@@ -141,6 +231,8 @@ struct MetalCanvas {
     let zoom: Float
     var showRapids = true
     var showReference = true
+    var playback = false
+    var progress: Float = 1
 
     final class Coordinator {
         var renderer: ToolpathRenderer?
@@ -170,6 +262,8 @@ struct MetalCanvas {
         renderer.zoom = zoom
         renderer.showRapids = showRapids
         renderer.showReference = showReference
+        renderer.playback = playback
+        renderer.progress = progress
     }
 }
 

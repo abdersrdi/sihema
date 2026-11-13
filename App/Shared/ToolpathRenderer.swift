@@ -58,6 +58,15 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
     var zoom: Float = 1
     var showRapids = true
     var showReference = true
+    /// Playback: when on, only the part of the path up to `progress` (0...1 of its length) is drawn bright,
+    /// the rest is drawn faint, and a marker shows where the tool is.
+    var playback = false
+    var progress: Float = 1
+
+    private var orderedVertices: [Vertex] = []
+    private var cumulative: [Float] = []
+    private var orderedBuffer: MTLBuffer?
+    private var dimBuffer: MTLBuffer?
 
     init?(view: MTKView) {
         guard let device = view.device ?? MTLCreateSystemDefaultDevice(),
@@ -86,6 +95,10 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         guard let toolpath, !toolpath.segments.isEmpty else {
             buffer = nil
             referenceBuffer = nil
+            orderedBuffer = nil
+            dimBuffer = nil
+            orderedVertices = []
+            cumulative = []
             cutCount = 0
             rapidCount = 0
             referenceCount = 0
@@ -100,12 +113,19 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         var cuts: [Vertex] = []
         var rapids: [Vertex] = []
         cuts.reserveCapacity(toolpath.segments.count * 2)
+        var ordered: [Vertex] = []
+        var cumulativeLength: [Float] = []
+        var travelled: Float = 0
+        ordered.reserveCapacity(toolpath.segments.count * 2)
         for segment in toolpath.segments {
             let isRapid = segment.kind == .rapid
             let color = isRapid ? rapidColor : cutColor
             segment.forEachLine(tolerance: tolerance) { a, b in
                 let first = Vertex(position: Self.float3(a), color: color)
                 let second = Vertex(position: Self.float3(b), color: color)
+                ordered.append(first); ordered.append(second)
+                travelled += simd_distance(first.position, second.position)
+                cumulativeLength.append(travelled)
                 if isRapid {
                     rapids.append(first); rapids.append(second)
                 } else {
@@ -114,6 +134,15 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
             }
         }
         let all = cuts + rapids
+        orderedVertices = ordered
+        cumulative = cumulativeLength
+        orderedBuffer = ordered.withUnsafeBytes { raw in
+            raw.count == 0 ? nil : device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
+        }
+        let dimmed = ordered.map { Vertex(position: $0.position, color: SIMD4<Float>($0.color.x * 0.28, $0.color.y * 0.28, $0.color.z * 0.28, 1)) }
+        dimBuffer = dimmed.withUnsafeBytes { raw in
+            raw.count == 0 ? nil : device.makeBuffer(bytes: raw.baseAddress!, length: raw.count, options: .storageModeShared)
+        }
         if all.isEmpty {
             buffer = nil
             referenceBuffer = nil
@@ -248,6 +277,47 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
         return fit * base
     }
 
+    // MARK: Playback
+
+    /// Draws the whole path faint, the part already travelled bright, and a cross at the tool position.
+    private func drawPlayback(_ encoder: MTLRenderCommandEncoder, bright: MTLBuffer, dim: MTLBuffer) {
+        guard let total = cumulative.last, total > 0 else { return }
+        let target = min(max(progress, 0), 1) * total
+        // first line whose end is at or beyond the target
+        var low = 0, high = cumulative.count - 1
+        while low < high {
+            let mid = (low + high) / 2
+            if cumulative[mid] >= target { high = mid } else { low = mid + 1 }
+        }
+        let index = low
+        let startLength: Float = index == 0 ? 0 : cumulative[index - 1]
+        let lineLength = max(cumulative[index] - startLength, 1e-9)
+        let fraction = min(max((target - startLength) / lineLength, 0), 1)
+        let a = orderedVertices[index * 2], b = orderedVertices[index * 2 + 1]
+        let tip = a.position + (b.position - a.position) * fraction
+
+        encoder.setVertexBuffer(dim, offset: 0, index: 0)
+        encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: orderedVertices.count)
+        if index > 0 {
+            encoder.setVertexBuffer(bright, offset: 0, index: 0)
+            encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: index * 2)
+        }
+        // the travelled part of the current line, and the marker
+        var extra: [Vertex] = [Vertex(position: a.position, color: a.color), Vertex(position: tip, color: a.color)]
+        let arm = max(extent * 0.02, 0.3)
+        let marker = SIMD4<Float>(1, 0.9, 0.3, 1)
+        for axis in 0..<3 {
+            var offset = SIMD3<Float>(repeating: 0)
+            offset[axis] = arm
+            extra.append(Vertex(position: tip - offset, color: marker))
+            extra.append(Vertex(position: tip + offset, color: marker))
+        }
+        extra.withUnsafeBytes { raw in
+            encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
+        }
+        encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: extra.count)
+    }
+
     // MARK: MTKViewDelegate
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -265,12 +335,16 @@ final class ToolpathRenderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBuffer(referenceBuffer, offset: 0, index: 0)
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: referenceCount)
             }
+            if playback, let orderedBuffer, let dimBuffer, !cumulative.isEmpty {
+                drawPlayback(encoder, bright: orderedBuffer, dim: dimBuffer)
+            } else {
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             if rapidCount > 0 && showRapids {
                 encoder.drawPrimitives(type: .line, vertexStart: cutCount, vertexCount: rapidCount)
             }
             if cutCount > 0 {
                 encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: cutCount)
+            }
             }
         }
         encoder.endEncoding()
