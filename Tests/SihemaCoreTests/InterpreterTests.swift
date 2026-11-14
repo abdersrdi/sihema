@@ -255,6 +255,27 @@ final class InterpreterTests: XCTestCase {
         XCTAssertEqual(tp.segments[0].feed, 50.8, accuracy: 1e-9)
     }
 
+    func testRotaryMoveWarnsThatThePathIsIncomplete() {
+        let tp = run("G01 X10 A90 F100\nG01 X20 A180\n")
+        XCTAssertEqual(tp.segments.count, 2)
+        XCTAssertEqual(tp.diagnostics.filter { $0.severity == .warning && $0.message.contains("rotary") }.count, 1)
+    }
+
+    func testRotaryWordAtZeroIsQuiet() {
+        let tp = run("G90 G54 A0 B0\nG01 X10 F100\n")
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("rotary") })
+    }
+
+    func testBWordOfAnUnknownCycleIsNotARotaryMove() {
+        let tp = run("G173 I0 K0 P75 R1 F1 B2500 J1 Z1\n")
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("rotary") })
+    }
+
+    func testMacroCallArgumentsNamedABCAreNotRotaryMoves() {
+        let tp = run("G65 P9000 A5 B6 C7\n")
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("rotary") })
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)

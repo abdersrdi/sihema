@@ -44,7 +44,7 @@ public struct MachineConfig: Sendable {
 /// G94/G95, F S T M words, M2/M30 program end, Macro B (variables, expressions, functions, IF/GOTO, WHILE/DO/END),
 /// subprograms (M98/M99, Haas M97), macro calls (G65), cutter radius compensation, G28/G30/G53/G92, work offsets
 /// and canned cycles G73 G74 G81-G89 with G98/G99, R/Z/Q/P and repeat counts (XY plane; G76, G87 and G88 are drawn
-/// as G86). Rotary axes are recognized but not simulated (reported once as a diagnostic).
+/// as G86). Rotary axes are not simulated; a program that moves one gets a warning (5-axis is a later product).
 public final class FanucInterpreter {
     public var config: MachineConfig
 
@@ -478,6 +478,7 @@ private struct Runner {
         var explicitMotion = false
         var cancelCycle = false
         var cycleSelect = 0
+        var unsupportedG = false // a G code we do not know: its A/B/C words are probably its own parameters
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
@@ -543,6 +544,7 @@ private struct Runner {
             case 990:
                 returnToInitial = false
             default:
+                unsupportedG = true
                 noteOnce(code, line: line, .info, "\(gName(code)) is not supported yet and is ignored")
             }
         }
@@ -614,8 +616,11 @@ private struct Runner {
             case 68 where w.hasValueFlag: // D
                 dWord = Int(w.value.rounded())
             case 65, 66, 67: // A B C
-                if !isMacroCall {
-                    noteOnce(10005, line: line, .info, "Rotary axes (A, B, C) are ignored in Phase 1")
+                // A rotary word at zero changes nothing; any other value means the machine turns an axis that
+                // is not simulated, so the path drawn from X, Y and Z alone is incomplete
+                if !isMacroCall && !unsupportedG && w.hasValueFlag && abs(w.value) > 1e-9 {
+                    noteOnce(10005, line: line, .warning,
+                             "This program moves a rotary axis (A, B or C). Rotary axes are not simulated, so the path shows X, Y and Z only and is incomplete")
                 }
             case 77 where w.hasValueFlag: // M
                 switch Int(w.value.rounded()) {
