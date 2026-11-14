@@ -51,6 +51,7 @@ final class ScreenshotTests: XCTestCase {
     func testReportWithProblems() {
         capture("08-report-problems", tab: "report", extra: ["SIHEMA_DEMO": "problems"])
     }
+    func testTools() { capture("09-tools", tab: "tools") }
     func testCompare() { capture("03-compare", tab: "compare") }
     func testReport() { capture("04-report", tab: "report") }
     func testReportWithSimulation() { capture("05-report-simulation", tab: "report", simulate: true, wait: 9) }

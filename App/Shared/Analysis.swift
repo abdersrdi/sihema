@@ -16,12 +16,12 @@ struct Analysis: Sendable {
     var tokenizeSeconds = 0.0
     var interpretSeconds = 0.0
 
-    static func make(text: String) -> Analysis {
+    static func make(text: String, config: MachineConfig = AppDefaults.machine) -> Analysis {
         let clock = ContinuousClock()
         var tokens = TokenizedProgram()
         let tokenize = clock.measure { tokens = GCodeTokenizer.tokenize(text) }
         var path = Toolpath()
-        let interpret = clock.measure { path = FanucInterpreter(config: AppDefaults.machine).run(tokens) }
+        let interpret = clock.measure { path = FanucInterpreter(config: config).run(tokens) }
         var result = Analysis()
         result.lineCount = tokens.lineCount
         result.wordCount = tokens.words.count

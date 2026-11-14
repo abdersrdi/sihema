@@ -6,6 +6,14 @@ struct ContentView: View {
     @State private var analysis: Analysis?
     @State private var selection = UITestSupport.tab ?? "code"
     @State private var jump: JumpRequest?
+    @ObservedObject private var settings = ToolSettings.shared
+
+    /// What an analysis depends on: the program and the sizes the user entered.
+    private struct AnalysisKey: Equatable {
+        var text: String
+        var radii: [Int: Double]
+        var inches: Bool
+    }
 
     /// Lines with errors or warnings, tinted in the editor, and the line the user jumped to.
     private var marks: EditorMarks {
@@ -25,6 +33,9 @@ struct ContentView: View {
             ToolpathView(analysis: analysis)
                 .tabItem { Label("Path", systemImage: "scribble.variable") }
                 .tag("path")
+            ToolsView(analysis: analysis, settings: settings)
+                .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
+                .tag("tools")
             CompareView(baseText: document.text)
                 .tabItem { Label("Compare", systemImage: "rectangle.split.2x1") }
                 .tag("compare")
@@ -38,13 +49,14 @@ struct ContentView: View {
         .onAppear {
             if let line = UITestSupport.jumpLine { jump = JumpRequest(line: line) }
         }
-        .task(id: document.text) {
+        .task(id: AnalysisKey(text: document.text, radii: settings.radii, inches: settings.defaultInches)) {
             // wait for typing to pause, then analyse off the main thread
             try? await Task.sleep(nanoseconds: 400_000_000)
             if Task.isCancelled { return }
             let text = document.text
+            let config = settings.machine
             let result = await Task.detached(priority: .userInitiated) {
-                Analysis.make(text: text)
+                Analysis.make(text: text, config: config)
             }.value
             if !Task.isCancelled { analysis = result }
         }

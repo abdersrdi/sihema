@@ -23,8 +23,7 @@ enum UITestSupport {
 enum AppDefaults {
     static let machine: MachineConfig = {
         var config = MachineConfig()
-        // cutter radii in mm for D1 and D2, standing in for a tool table
-        config.cutterRadii = [1: 3.0, 2: 5.0]
+        // cutter radii come from the program, from the tool comments or from the user's entries (ToolSettings)
         return config
     }()
 }
