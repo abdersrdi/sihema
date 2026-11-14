@@ -356,6 +356,59 @@ final class InterpreterTests: XCTestCase {
         XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("rotary") })
     }
 
+    func testLatheCyclesAreLeftOutNotDrawnAsMillCycles() {
+        for block in ["G74 X95.2 W5 R0.6 C3 F0.1", "G76 X0.2 Z-0.25 K0.044 D0.01 F0.05", "G73 U1 W1 R3"] {
+            let tp = run("G00 X10 Z5\n\(block)\nG00 X0\n")
+            XCTAssertEqual(tp.segments.count, 2, block) // only the two rapids
+            XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("lathe cycle") }, block)
+            XCTAssertFalse(tp.diagnostics.contains { $0.severity == .warning }, block)
+        }
+    }
+
+    func testMillTappingAndBoringStayCycles() {
+        let tapping = run("G90 G00 Z10\nG74 X5 Y5 Z-5 R2 P500 F100\nG80\n")
+        XCTAssertTrue(tapping.segments.contains { $0.kind == .linear })
+        XCTAssertFalse(tapping.diagnostics.contains { $0.message.contains("lathe") })
+        let boring = run("G90 G00 Z10\nG76 X5 Y5 Z-5 R2 Q0.5 F100\nG80\n")
+        XCTAssertTrue(boring.segments.contains { $0.kind == .linear })
+    }
+
+    func testCycleWithoutRStartsFromTheCurrentHeight() {
+        // as in real Haas programs: G01 Z0, then G82 Z-0.12 with no R
+        let tp = run("G90 G21 G01 Z0 F100\nG82 X5 Y5 Z-3 P500 F10\nG80\n")
+        let feeds = tp.segments.filter { $0.kind == .linear && $0.start.x == 5 }
+        XCTAssertEqual(feeds.count, 1)
+        XCTAssertEqual(feeds[0].start.z, 0, accuracy: 1e-9)
+        XCTAssertEqual(feeds[0].end.z, -3, accuracy: 1e-9)
+        XCTAssertEqual(tp.dwellSeconds, 0.5, accuracy: 1e-9)
+        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .info && $0.message.contains("R plane") })
+        XCTAssertFalse(tp.diagnostics.contains { $0.severity == .warning })
+    }
+
+    func testIncrementalDepthWithoutRCountsFromTheStartingHeight() {
+        let tp = run("G90 G00 Z8\nG91 G81 X5 Z-6 F10\nG80\n")
+        let feeds = tp.segments.filter { $0.kind == .linear }
+        XCTAssertEqual(feeds.count, 1)
+        XCTAssertEqual(feeds[0].end.z, 2, accuracy: 1e-9)
+    }
+
+    func testCycleWithoutDepthIsSkippedWithAWarning() {
+        let tp = run("G90 G00 Z10\nG81 X5 Y5 R2 F10\nG80\n")
+        XCTAssertTrue(tp.segments.filter { $0.kind == .linear }.isEmpty)
+        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning && $0.message.contains("Z depth") })
+    }
+
+    func testPeckReentryNeverGoesAboveTheRPlane() {
+        // Q smaller than the re-entry clearance: the drill must not rise above R and feed down from there
+        for code in ["G83", "G73"] {
+            let tp = run("G90 G00 Z10\n\(code) X0 Y0 Z-1.2 R2 Q0.5 F100\nG80\n")
+            let feeds = tp.segments.filter { $0.kind == .linear }
+            XCTAssertFalse(feeds.isEmpty, code)
+            XCTAssertTrue(feeds.allSatisfy { $0.start.z <= 2 + 1e-9 }, "\(code) fed down from above R")
+            XCTAssertEqual(feeds.last?.end.z ?? 0, -1.2, accuracy: 1e-9, code)
+        }
+    }
+
     func testG80KeepsEarlierMotionMode() {
         let tp = run("G01 F100\nG81 X1 Y1 Z-1 R1\nG80 X5 Y5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)

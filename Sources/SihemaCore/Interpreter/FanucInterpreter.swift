@@ -517,6 +517,11 @@ private struct Runner {
         var cancelCycle = false
         var cycleSelect = 0
         var unsupportedG = false // a G code we do not know: its A/B/C words are probably its own parameters
+        // G73, G74 and G76 are drilling cycles on a mill but turning cycles on a lathe, where they carry U, W or D
+        // words (or I together with K). Turning is not simulated, so such a block is left out.
+        var latheCycle = false
+        let hasWord = { (letter: UInt8) in words.contains { $0.letter == letter && $0.hasValueFlag } }
+        let latheWords = hasWord(85) || hasWord(87) || hasWord(68) || (hasWord(73) && hasWord(75))
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
@@ -571,6 +576,12 @@ private struct Runner {
                 isMacroCall = true
             case 800:
                 cancelCycle = true
+            case 730 where latheWords, 740 where latheWords, 760 where latheWords:
+                latheCycle = true
+                unsupportedG = true // its C, A or B words are the cycle's own parameters, not a rotary axis
+                let name = gName(code)
+                noteOnce(10019, line: line, .info,
+                         "\(name) with U, W or D words is a lathe cycle; turning cycles are not simulated yet, so the block is ignored")
             case 730, 740, 760, 810, 820, 830, 840, 850, 860, 870, 880, 890:
                 cycleSelect = code / 10
                 if code == 760 || code == 870 || code == 880 {
@@ -810,6 +821,9 @@ private struct Runner {
                 motion = saved
             }
 
+        case 0 where latheCycle:
+            break // a turning cycle: reported above, and its X and Z words are not a straight move
+
         case 0 where cannedCode != 0:
             let zShift = shift.z
             if hasRadius {
@@ -817,7 +831,8 @@ private struct Runner {
                 cycleHasR = true
             }
             if axisMask & 4 != 0 {
-                cycleZ = absolute ? axisValue.z + zShift : cycleR + axisValue.z
+                // incremental Z counts from the R plane, which is the starting height when no R was given
+                cycleZ = absolute ? axisValue.z + zShift : (cycleHasR ? cycleR : cycleInitialZ) + axisValue.z
                 cycleHasZ = true
             }
             if let q = rawQ { cycleQ = abs(q) }
@@ -825,10 +840,15 @@ private struct Runner {
             if axisMask & 3 != 0 {
                 if plane != .xy {
                     noteOnce(10012, line: line, .warning, "Canned cycles are only simulated in the XY plane (G17)")
-                } else if !cycleHasR || !cycleHasZ {
-                    noteOnce(10013, line: line, .warning,
-                             "Canned cycle without an R plane or a Z depth; the hole is skipped")
+                } else if !cycleHasZ {
+                    noteOnce(10013, line: line, .warning, "Canned cycle without a Z depth; the hole is skipped")
                 } else {
+                    if !cycleHasR {
+                        // Haas and some other controls start the cycle from where the tool stands when no R is given
+                        cycleR = cycleInitialZ
+                        noteOnce(10018, line: line, .info,
+                                 "Canned cycle without an R plane: the starting height is used as the R plane")
+                    }
                     let repeats = min(9999, max(1, (rawL ?? rawK ?? 1).clampedInt))
                     for _ in 0..<repeats {
                         var xy = pos
@@ -980,13 +1000,18 @@ private struct Runner {
                 let next = current + sign * min(peck, abs(z - current))
                 cycleMove(line: line, to: at(next), rapid: false)
                 if abs(z - next) > 1e-9 {
+                    let towardR = -sign // which way the R plane lies
                     if cannedCode == 83 {
                         cycleMove(line: line, to: at(r), rapid: true)
-                        let back = next - sign * config.peckClearanceMM
-                        // never rapid past the previous depth
-                        cycleMove(line: line, to: at(sign > 0 ? min(back, next) : max(back, next)), rapid: true)
+                        // go back down to a little above the depth just reached, but never above the R plane
+                        var back = next + towardR * config.peckClearanceMM
+                        back = towardR > 0 ? min(back, r) : max(back, r)
+                        cycleMove(line: line, to: at(back), rapid: true)
                     } else {
-                        cycleMove(line: line, to: at(next - sign * config.chipBreakRetractMM), rapid: true)
+                        // G73: back off a little, but never beyond where this peck started
+                        var back = next + towardR * config.chipBreakRetractMM
+                        back = towardR > 0 ? min(back, current) : max(back, current)
+                        cycleMove(line: line, to: at(back), rapid: true)
                     }
                 }
                 current = next

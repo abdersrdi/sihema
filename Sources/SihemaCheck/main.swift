@@ -96,6 +96,7 @@ for path in files {
                            s.center.x, s.center.y, s.center.z, s.feed].map { fmt($0, 9) }
             rows.append(kind + " " + String(s.plane.rawValue) + " " + numbers.joined(separator: " "))
         }
+        rows.append("D " + fmt(toolpath.dwellSeconds, 6))
         try? (rows.joined(separator: "\u{0A}") + "\u{0A}").write(toFile: dump, atomically: true, encoding: .utf8)
     }
     if let dir = svgDir, toolpath.hasBounds {
