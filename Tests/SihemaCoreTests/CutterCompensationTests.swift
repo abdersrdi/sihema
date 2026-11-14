@@ -153,6 +153,39 @@ final class CutterCompensationTests: XCTestCase {
         assertMove(tp.segments[5], from: (22, 0), to: (20, -10))
     }
 
+    func testNearlyTangentJoinsCarryOnWithoutAGap() {
+        // arc and line meet tangentially, with the 4-decimal rounding a CAM post leaves behind
+        let text = "G00 X-5 Y-10\nG41 D1 G01 X0 Y0 F100\nG01 X30 Y0\nG03 X40.0001 Y10 I0.0001 J10\nG01 X40.0001 Y30\nG40 G01 X30 Y40\n"
+        let tp = run(text, radii: [1: 2])
+        XCTAssertFalse(tp.diagnostics.contains { $0.severity == .warning })
+        var gaps: [Double] = []
+        let moves = tp.segments.filter { $0.kind != .rapid }
+        for i in 1..<moves.count {
+            let a = moves[i - 1].end, b = moves[i].start
+            gaps.append(((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot())
+        }
+        XCTAssertLessThan(gaps.max() ?? 0, 3e-3)
+    }
+
+    func testShortMoveBetweenTwoCornersIsSkippedNotReversed() {
+        // the closing line is shorter than the cutter radius between two inside corners: its offset would run
+        // backwards and cut into the part, so it is skipped and reported
+        let text = "G90 G21 G17\nG00 X3.9657 Y2.4350\nG42 D1 G01 X5.7935 Y15.4432 F500\nG01 X9.7790 Y14.8832\n"
+            + "G01 X15.5916 Y-2.0216\nG2 X11.2172 Y-13.7432 I-9.3121 J-3.2019\nG01 X-7.2221 Y-24.4301\n"
+            + "G01 X1.4500 Y16.0535\nG01 X5.7935 Y15.4432\nG40 G01 X3.9657 Y2.4350\nM30\n"
+        let compensated = run(text, radii: [1: 3.712])
+        let plain = run(text.replacingOccurrences(of: "G42 D1 ", with: "").replacingOccurrences(of: "G40 ", with: ""),
+                        radii: [:])
+        var programmed: [Int32: SIMD3<Double>] = [:]
+        for s in plain.segments where s.kind == .linear { programmed[s.line] = s.end - s.start }
+        for s in compensated.segments where s.kind == .linear {
+            guard let d = programmed[s.line] else { continue }
+            let c = s.end - s.start
+            XCTAssertGreaterThanOrEqual(c.x * d.x + c.y * d.y, -1e-9, "move on line \(s.line) runs backwards")
+        }
+        XCTAssertTrue(compensated.diagnostics.contains { $0.message.contains("skipped") })
+    }
+
     func testMissingRadiusLeavesThePathAsProgrammed() {
         let tp = run("G00 X0 Y-10\nG41 D7 G01 X0 Y0 F100\nG01 X10 Y0\nG40 G01 X10 Y-10\n")
         XCTAssertEqual(tp.segments.count, 4)

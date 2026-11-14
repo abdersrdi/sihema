@@ -32,12 +32,16 @@ func svg(for toolpath: Toolpath) -> String {
 
 var files: [String] = []
 var svgDir: String?
+var dumpPath: String?
 var config = MachineConfig()
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
     let a = args.removeFirst()
     if a == "--svg-dir", !args.isEmpty {
         svgDir = args.removeFirst()
+    } else if a == "--dump", !args.isEmpty {
+        // one line per segment: kind plane start(3) end(3) centre(3) feed, for checking the path with other tools
+        dumpPath = args.removeFirst()
     } else if a == "--radii", !args.isEmpty {
         // for example --radii 1=3,2=5 gives D1 a 3 mm radius and D2 a 5 mm radius
         for pair in args.removeFirst().split(separator: ",") {
@@ -77,6 +81,22 @@ for path in files {
     }
     for (message, info) in counts.sorted(by: { $0.key < $1.key }) {
         print("  - \(message) (first at line \(info.first))")
+    }
+    if let dump = dumpPath {
+        var rows: [String] = []
+        for s in toolpath.segments {
+            let kind: String
+            switch s.kind {
+            case .rapid: kind = "R"
+            case .linear: kind = "L"
+            case .arcCW: kind = "CW"
+            case .arcCCW: kind = "CCW"
+            }
+            let numbers = [s.start.x, s.start.y, s.start.z, s.end.x, s.end.y, s.end.z,
+                           s.center.x, s.center.y, s.center.z, s.feed].map { fmt($0, 9) }
+            rows.append(kind + " " + String(s.plane.rawValue) + " " + numbers.joined(separator: " "))
+        }
+        try? (rows.joined(separator: "\u{0A}") + "\u{0A}").write(toFile: dump, atomically: true, encoding: .utf8)
     }
     if let dir = svgDir, toolpath.hasBounds {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

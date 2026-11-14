@@ -119,6 +119,11 @@ private func makeJoint(_ a: Prim, _ b: Prim, _ oa: Prim?, _ ob: Prim?, side: Dou
     if len2(e - s) < 1e-7 {
         return Joint(exit: e, entry: s, connectorCenter: nil, problem: nil)
     }
+    // A join that is tangent to within CAM rounding (a few arc-seconds): the offset paths just carry on. Treating
+    // the noise as a real corner would intersect two almost tangent curves, which is badly conditioned.
+    if abs(turn) < 2e-4 && dot2(ta, tb) > 0 {
+        return Joint(exit: e, entry: s, connectorCenter: nil, problem: nil)
+    }
     if turn * side > 1e-9 {
         // inside corner: the two offset paths cross, so both are cut short at the crossing
         let candidates = intersections(oa, ob)
@@ -225,16 +230,57 @@ enum CutterCompensation {
         }
 
         let offsets = prims.map { offset($0, side: side, r: r) }
-        var joints: [Joint] = []
-        if prims.count > 1 {
-            for k in 0..<(prims.count - 1) {
-                let joint = makeJoint(prims[k], prims[k + 1], offsets[k], offsets[k + 1], side: side)
-                joints.append(joint)
-                if let problem = joint.problem {
-                    problems.append((Int(segments[planarIndex[k + 1]].line), problem))
+
+        // The joints between neighbouring moves. A short move between two inside corners can be eaten from both
+        // ends at once: its offset then runs backwards and would cut into the part. A control with interference
+        // avoidance drops such a move and joins its neighbours directly, so that is done here too.
+        var active = Array(0..<prims.count)
+        var joints: [Int: Joint] = [:] // keyed by the move that comes before the joint
+        func buildJoints() {
+            joints.removeAll()
+            if active.count > 1 {
+                for position in 0..<(active.count - 1) {
+                    let a = active[position], b = active[position + 1]
+                    joints[a] = makeJoint(prims[a], prims[b], offsets[a], offsets[b], side: side)
                 }
             }
         }
+        buildJoints()
+        var dropped = Set<Int>()
+        var changed = true
+        var passes = 0
+        while changed && passes < 64 && active.count >= 3 {
+            changed = false
+            passes += 1
+            for position in 1..<(active.count - 1) {
+                let k = active[position]
+                guard !prims[k].isArc, let o = offsets[k],
+                      let entering = joints[active[position - 1]], let leaving = joints[k] else { continue }
+                let d = o.p1 - o.p0
+                let length2 = max(dot2(d, d), 1e-18)
+                let tIn = dot2(entering.entry - o.p0, d) / length2
+                let tOut = dot2(leaving.exit - o.p0, d) / length2
+                if tOut < tIn - 1e-6 {
+                    problems.append((Int(segments[planarIndex[k]].line),
+                                     "the cutter is too large for this short move between two corners; the move was skipped so the tool does not cut into the part"))
+                    dropped.insert(k)
+                    active.remove(at: position)
+                    buildJoints()
+                    changed = true
+                    break
+                }
+            }
+        }
+        if active.count > 1 {
+            for position in 0..<(active.count - 1) {
+                let a = active[position], b = active[position + 1]
+                if let problem = joints[a]?.problem {
+                    problems.append((Int(segments[planarIndex[b]].line), problem))
+                }
+            }
+        }
+        var activePosition: [Int: Int] = [:]
+        for (position, k) in active.enumerated() { activePosition[k] = position }
 
         var cursor = segments[0].start
         var next = 0
@@ -250,11 +296,11 @@ enum CutterCompensation {
             }
             let k = next
             next += 1
-            let isFirst = k == 0
-            let isLast = k == prims.count - 1
+            guard let position = activePosition[k] else { continue } // a move that was skipped
+            let isFirst = position == 0
+            let isLast = position == active.count - 1
 
-            if k > 0, let center = joints[k - 1].connectorCenter {
-                let joint = joints[k - 1]
+            if position > 0, let joint = joints[active[position - 1]], let center = joint.connectorCenter {
                 let h = cursor[ax.h]
                 let rapid = s.kind == .rapid
                 let connector = Segment(
@@ -268,8 +314,10 @@ enum CutterCompensation {
 
             let startsCompensation = isFirst && s.compPhase == 1
             let endsCompensation = isLast && s.compPhase == 3
-            let startUV: V2 = isFirst ? (startsCompensation ? uv(s.start) : (offsets[k]?.p0 ?? uv(s.start))) : joints[k - 1].entry
-            let endUV: V2 = isLast ? (endsCompensation ? uv(s.end) : (offsets[k]?.p1 ?? uv(s.end))) : joints[k].exit
+            let startUV: V2 = isFirst ? (startsCompensation ? uv(s.start) : (offsets[k]?.p0 ?? uv(s.start)))
+                : (joints[active[position - 1]]?.entry ?? uv(s.start))
+            let endUV: V2 = isLast ? (endsCompensation ? uv(s.end) : (offsets[k]?.p1 ?? uv(s.end)))
+                : (joints[k]?.exit ?? uv(s.end))
             let straight = startsCompensation || endsCompensation || !s.kind.isArc || offsets[k] == nil
 
             var piece: Segment
