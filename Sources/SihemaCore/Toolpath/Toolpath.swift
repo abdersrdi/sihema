@@ -150,6 +150,30 @@ public struct Diagnostic: Sendable {
     public var message: String
 }
 
+/// Where the cutter radius used for compensation came from.
+public enum RadiusSource: Sendable, Equatable {
+    /// The program set it itself (G10 L12 or L13).
+    case program
+    /// The user's tool table.
+    case table
+    /// A guess from the comment next to the tool change.
+    case comment(line: Int)
+    /// Nothing was known, so compensation was skipped.
+    case missing
+}
+
+/// One offset register used with G41 or G42.
+public struct CompensationUse: Sendable {
+    public var register: Int
+    /// The tool that was in the spindle at the first use.
+    public var tool: Int
+    /// Radius in millimetres, or nil when it was missing.
+    public var radius: Double?
+    public var source: RadiusSource
+    /// Zero-based line of the first use.
+    public var line: Int
+}
+
 /// The result of interpreting a program: the moves, what the interpreter could not handle, and totals.
 public struct Toolpath: Sendable {
     public var segments: [Segment] = []
@@ -158,6 +182,8 @@ public struct Toolpath: Sendable {
     public var boundsMin = SIMD3<Double>(repeating: 0)
     public var boundsMax = SIMD3<Double>(repeating: 0)
     public var hasBounds = false
+    /// Every offset register the program used with G41/G42, keyed by register number.
+    public var compensationUse: [Int: CompensationUse] = [:]
     public var rapidLength = 0.0
     public var cuttingLength = 0.0
     public var dwellSeconds = 0.0

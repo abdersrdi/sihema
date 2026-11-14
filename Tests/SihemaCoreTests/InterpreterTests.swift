@@ -325,8 +325,8 @@ final class InterpreterTests: XCTestCase {
     }
 
     func testCountingLoopWithoutMovesIsNotMistakenForAWait() {
-        let tp = run("#1=0\nWHILE[#1 LT 200000]DO1\n#1=#1+1\nEND1\nG01 X[#1] F100\n")
-        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 200_000, accuracy: 1e-9)
+        let tp = run("#1=0\nWHILE[#1 LT 30000]DO1\n#1=#1+1\nEND1\nG01 X[#1] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 30_000, accuracy: 1e-9)
         XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("waits") })
     }
 

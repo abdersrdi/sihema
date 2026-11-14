@@ -224,6 +224,10 @@ private struct Runner {
     var compCancelPending = false
     var usedComp = false
     var lastD = 0
+    /// Radii the program sets itself with G10 L12/L13, in mm.
+    var programRadii: [Int: Double] = [:]
+    /// Sizes read from the comments next to tool changes.
+    var toolGuesses: [Int: ToolGuess] = [:]
 
     // canned cycles (G73 G74 G76 G81-G89): 0 means none is active
     var cannedCode = 0
@@ -252,6 +256,7 @@ private struct Runner {
         var table = config.workOffsets
         for (p, value) in config.extendedWorkOffsets { table[1000 + p] = value }
         self.offsets = table
+        self.toolGuesses = ToolComments.guesses(in: program, defaultInches: config.defaultInches)
         indexProgram(program)
     }
 
@@ -675,16 +680,40 @@ private struct Runner {
         }
         let none = SIMD3<Double>(repeating: 0)
 
-        if pendingSide != 0 {
+        // the offset register is modal: a D word in any block stays until the next one
+        if !isMacroCall, let d = dWord { lastD = d }
+        if pendingSide != 0 && lastD == 0 {
+            // D0 is "no offset": compensation with nothing to compensate. Not a mistake worth a warning.
+            noteOnce(20000, line: line, .info,
+                     "G41/G42 without a D offset (D0): no cutter radius is applied")
+        } else if pendingSide != 0 {
             let d = dWord ?? lastD
             lastD = d
-            if let radius = config.cutterRadii[d], radius > 0 {
+            var found: (radius: Double, source: RadiusSource)?
+            if let r = programRadii[d], r > 0 {
+                found = (r, .program)
+            } else if let r = config.cutterRadii[d], r > 0 {
+                found = (r, .table)
+            } else if let guess = toolGuesses[Int(tool)], guess.tool == d, guess.radius > 0 {
+                // the usual convention: the offset register has the number of the tool
+                found = (guess.radius, .comment(line: guess.line))
+            }
+            if tp.compensationUse[d] == nil {
+                tp.compensationUse[d] = CompensationUse(register: d, tool: Int(tool), radius: found?.radius,
+                                                        source: found?.source ?? .missing, line: line)
+            }
+            if let found {
                 if compSide == 0 { compStartPending = true }
                 compSide = pendingSide
-                compRadius = radius
+                compRadius = found.radius
+                if case .comment(let commentLine) = found.source {
+                    let text = String(format: "%.3f", found.radius)
+                    noteOnce(30000 + d, line: line, .info,
+                             "D\(d): cutter radius \(text) mm is a guess from the tool comment on line \(commentLine + 1). Check it in the Tools tab")
+                }
             } else {
                 noteOnce(20000 + d, line: line, .warning,
-                         "No cutter radius for D\(d) in the tool table, so cutter radius compensation is skipped")
+                         "No cutter radius for D\(d), so cutter radius compensation is skipped. Enter it in the Tools tab")
             }
         }
         if cancelComp && compSide != 0 { compCancelPending = true }
@@ -706,8 +735,17 @@ private struct Runner {
                     value[k] = l == 2 ? axisValue[k] : value[k] + axisValue[k]
                 }
                 offsets[index] = value
+            } else if l == 12 || l == 13, let p = rawP, hasRadius {
+                // tool radius offset: L12 sets the geometry value, L13 adds wear
+                let register = p.clampedInt
+                if l == 12 {
+                    programRadii[register] = radius
+                } else {
+                    programRadii[register] = (programRadii[register] ?? config.cutterRadii[register] ?? 0) + radius
+                }
             } else {
-                noteOnce(10020, line: line, .info, "Only G10 L2 and L20 (work offsets) are supported; other G10 forms are ignored")
+                noteOnce(10020, line: line, .info,
+                         "Only G10 L2, L20, L12 and L13 (work offsets and cutter radius) are supported; other G10 forms are ignored")
             }
 
         case 920: // G92: the current position gets new coordinates
