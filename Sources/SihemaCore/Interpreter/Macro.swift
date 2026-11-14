@@ -21,6 +21,8 @@ final class MacroVariables {
     var position = SIMD3<Double>(repeating: 0)
     /// Set when the program writes `#3000` (a user alarm).
     var alarmCode: Int?
+    /// How many times a variable was written; a loop that never changes this and never moves is waiting.
+    var writeCount = 0
 
     func read(_ reference: VariableReference) -> Double? {
         switch reference {
@@ -48,13 +50,14 @@ final class MacroVariables {
     }
 
     func write(_ id: Int, _ value: Double?) throws {
+        writeCount += 1
         switch id {
         case 0:
             throw MacroError("#0 cannot be changed")
         case 5001...5003, 5021...5023:
             throw MacroError("#\(id) is read-only")
         case 3000:
-            if let value, value != 0 { alarmCode = Int(value.rounded()) }
+            if let value, value != 0 { alarmCode = value.clampedInt }
         case 1...99:
             local[id] = value
         default:
@@ -142,16 +145,16 @@ final class MacroParser {
             advance()
             let value = try parseExpression()
             try expect(93)
-            return .number(Int(value.rounded()))
+            return .number(value.clampedInt)
         }
         if c == 35 { // '#'
             let inner = try parseReference()
-            return .number(Int((vars.read(inner) ?? 0).rounded()))
+            return .number((vars.read(inner) ?? 0).clampedInt)
         }
         var number = 0
         var any = false
         while let d = peek(), isDigit(d) {
-            number = number * 10 + Int(d - 48)
+            if number < 100_000_000_000 { number = number * 10 + Int(d - 48) }
             any = true
             advance()
         }
@@ -285,14 +288,37 @@ final class MacroParser {
 
     // MARK: Expressions (inside brackets)
 
-    /// Comparison level: EQ NE GT LT GE LE.
+    /// A comparison written with symbols (== != <> < > <= >=), as other controls and CAM systems write it.
+    /// Returns the equivalent word (EQ, NE, ...) and moves past it, or nil when the next characters are not one.
+    private func takeSymbolicComparison() -> String? {
+        guard index < bytes.count else { return nil }
+        let c = bytes[index]
+        let d: UInt8? = index + 1 < bytes.count ? bytes[index + 1] : nil
+        switch (c, d) {
+        case (61, 61?): advance(2); return "EQ"      // ==
+        case (33, 61?): advance(2); return "NE"      // !=
+        case (60, 62?): advance(2); return "NE"      // <>
+        case (60, 61?): advance(2); return "LE"      // <=
+        case (62, 61?): advance(2); return "GE"      // >=
+        case (60, _): advance(); return "LT"         // <
+        case (62, _): advance(); return "GT"         // >
+        default: return nil
+        }
+    }
+
+    /// Comparison level: EQ NE GT LT GE LE, or the same written as symbols.
     func parseExpression() throws -> Double {
         var left = try parseAdditive()
         while true {
             skipSpace()
-            let op = peekAlphaRun()
-            guard ["EQ", "NE", "GT", "LT", "GE", "LE"].contains(op) else { break }
-            advance(op.count)
+            var op = peekAlphaRun()
+            if ["EQ", "NE", "GT", "LT", "GE", "LE"].contains(op) {
+                advance(op.count)
+            } else if let symbol = takeSymbolicComparison() {
+                op = symbol
+            } else {
+                break
+            }
             let right = try parseAdditive()
             let equal = abs(left - right) < 1e-9
             switch op {

@@ -255,6 +255,68 @@ final class InterpreterTests: XCTestCase {
         XCTAssertEqual(tp.segments[0].feed, 50.8, accuracy: 1e-9)
     }
 
+    func testHugeNumbersNeverCrash() {
+        // each of these used to trap on an integer overflow or a failed Int conversion
+        let huge = String(repeating: "9", count: 40)
+        let programs = [
+            "N\(huge) G01 X1 F100\n",
+            "O\(huge)\nG01 X1 F100\n",
+            "#\(huge)=1\n",
+            "#1=\(huge)\nG01 X[#1] F100\n",
+            "G65 P\(huge)\n",
+            "M98 P\(huge)\n",
+            "G04 P\(huge)\n",
+            "G10 L2 P\(huge) X1\n",
+            "T\(huge) M6\n",
+            "G01 X1 F100 D\(huge)\nG41 D\(huge) G01 X2\n",
+            "G\(huge)\n",
+            "G81 X1 Y1 Z-1 R1 L\(huge) F100\n",
+            "IF [1 EQ 1] GOTO\(huge)\n",
+            "#3000=\(huge)\n",
+            "G01 X1e999\n",
+            String(repeating: "0123456789", count: 5000) + "\n"
+        ]
+        for text in programs {
+            _ = run(text)
+        }
+    }
+
+    func testWaitLoopOnAMachineSignalIsSkipped() {
+        let tp = run("WHILE[#1013==0]DO1\n(waiting for the knife signal)\nEND1\nG01 X5 F100\n")
+        XCTAssertEqual(tp.segments.count, 1)
+        XCTAssertTrue(tp.diagnostics.contains { $0.severity == .warning && $0.message.contains("waits") })
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("Stopped after") })
+    }
+
+    func testSymbolicComparisonsAreUnderstood() {
+        let tp = run("#1=3\nIF [#1 == 3] THEN #2=1\nIF [#1 != 3] THEN #2=9\nIF [#1 >= 3] THEN #3=1\nIF [#1 < 2] THEN #3=9\nG01 X[#2] Y[#3] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 1, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments.last?.end.y ?? 0, 1, accuracy: 1e-9)
+    }
+
+    func testBrokenWhileDoesNotTrapTheProgram() {
+        let tp = run("WHILE[#1 LT ]DO1\nG01 X1 F100\nEND1\nG01 X5\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("Stopped after") })
+    }
+
+    func testWaitJumpOnAMachineSignalIsSkipped() {
+        let tp = run("N10 IF [#1013 EQ 0] GOTO10\nG01 X5 F100\n")
+        XCTAssertEqual(tp.segments.count, 1)
+        XCTAssertTrue(tp.diagnostics.contains { $0.message.contains("waits") })
+    }
+
+    func testCountingLoopWithoutMovesIsNotMistakenForAWait() {
+        let tp = run("#1=0\nWHILE[#1 LT 200000]DO1\n#1=#1+1\nEND1\nG01 X[#1] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 200_000, accuracy: 1e-9)
+        XCTAssertFalse(tp.diagnostics.contains { $0.message.contains("waits") })
+    }
+
+    func testRepeatCountIsCapped() {
+        let tp = run("G90 G00 Z10\nG81 X1 Y1 Z-1 R1 L999999999 F100\nG80\n")
+        XCTAssertLessThan(tp.segments.count, 100_000)
+    }
+
     func testRotaryMoveWarnsThatThePathIsIncomplete() {
         let tp = run("G01 X10 A90 F100\nG01 X20 A180\n")
         XCTAssertEqual(tp.segments.count, 2)

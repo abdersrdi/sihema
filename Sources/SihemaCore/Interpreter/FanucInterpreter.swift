@@ -62,8 +62,32 @@ public final class FanucInterpreter {
         let count = program.lineCount
         var pc = 0
         var blocks = 0
+        var stallSegments = -1
+        var stallWrites = -1
         while pc < count && !runner.finished {
             blocks += 1
+            if blocks % 20_000 == 0 {
+                let segments = runner.tp.segments.count
+                let writes = runner.vars.writeCount
+                if segments == stallSegments && writes == stallWrites {
+                    // 20,000 blocks with no move and no variable written: the program is waiting for something that
+                    // never changes in a simulation, such as a machine input signal. Carry on after the wait.
+                    if runner.lastWhileLine >= 0, let end = runner.loopEnd[runner.lastWhileLine] {
+                        runner.note(.warning, line: runner.lastWhileLine,
+                                    "This loop waits for a condition that never changes in a simulation (for example a machine signal); the simulation continues after it")
+                        pc = end + 1
+                        runner.lastWhileLine = -1
+                        runner.lastGotoLine = -1
+                    } else if runner.lastGotoLine >= 0 {
+                        runner.note(.warning, line: runner.lastGotoLine,
+                                    "This jump waits for a condition that never changes in a simulation (for example a machine signal); the simulation continues after it")
+                        pc = runner.lastGotoLine + 1
+                        runner.lastGotoLine = -1
+                    }
+                }
+                stallSegments = runner.tp.segments.count
+                stallWrites = runner.vars.writeCount
+            }
             if blocks > config.maxExecutedBlocks {
                 runner.note(.error, line: pc, "Stopped after \(config.maxExecutedBlocks) blocks; the program may loop forever")
                 break
@@ -184,6 +208,8 @@ private struct Runner {
     var activeOffset = 54
     var g92Shift = SIMD3<Double>(repeating: 0)
     var localShift = SIMD3<Double>(repeating: 0) // G52
+    var lastWhileLine = -1 // the WHILE whose condition last held, and the last jump backwards: for wait loops
+    var lastGotoLine = -1
     // G68 coordinate rotation, in the plane that was active when it was switched on
     var rotActive = false
     var rotPlane = PlaneID.xy
@@ -235,9 +261,9 @@ private struct Runner {
             let range = program.wordRange(line: line)
             if let first = program.words[range].first, first.hasValueFlag {
                 if first.letter == 78 {
-                    labels[Int(first.value), default: []].append(line)
-                } else if first.letter == 79, programLines[Int(first.value)] == nil {
-                    programLines[Int(first.value)] = line
+                    labels[first.value.clampedInt, default: []].append(line)
+                } else if first.letter == 79, programLines[first.value.clampedInt] == nil {
+                    programLines[first.value.clampedInt] = line
                 }
             }
             guard program.lineFlags[line].contains(.macro) else { continue }
@@ -261,7 +287,7 @@ private struct Runner {
                     var number = 0
                     var hasNumber = false
                     while j < bytes.count && bytes[j] >= 48 && bytes[j] <= 57 {
-                        number = number * 10 + Int(bytes[j] - 48)
+                        if number < 100_000_000_000 { number = number * 10 + Int(bytes[j] - 48) }
                         hasNumber = true
                         j += 1
                     }
@@ -304,6 +330,8 @@ private struct Runner {
             try readMacroLine(parser, line: line, words: &words)
         } catch let error as MacroError {
             note(.error, line: line, "Macro error: \(error.message)")
+            // a WHILE that cannot be read must not trap the program: its END would jump straight back to it
+            if let end = loopEnd[line] { jump = end + 1 }
             return
         } catch {
             return
@@ -318,6 +346,7 @@ private struct Runner {
             throw MacroError("Block N\(number) not found")
         }
         jump = lines.first(where: { $0 > line }) ?? lines[0]
+        if let target = jump, target <= line { lastGotoLine = line }
     }
 
     mutating func readMacroLine(_ p: MacroParser, line: Int, words: inout [GCodeWord]) throws {
@@ -352,7 +381,7 @@ private struct Runner {
                 let next = p.peekAlphaRun()
                 if next == "GOTO" {
                     p.advance(4)
-                    let target = Int((try p.parseOperand() ?? 0).rounded())
+                    let target = (try p.parseOperand() ?? 0).clampedInt
                     if condition != 0 {
                         try jumpToLabel(target, from: line)
                         return
@@ -379,6 +408,7 @@ private struct Runner {
                     jump = end + 1
                     return
                 }
+                lastWhileLine = line
             case "DO":
                 p.advance(2)
                 _ = try p.parseOperand()
@@ -390,7 +420,7 @@ private struct Runner {
                 return
             case "GOTO":
                 p.advance(4)
-                let target = Int((try p.parseOperand() ?? 0).rounded())
+                let target = (try p.parseOperand() ?? 0).clampedInt
                 try jumpToLabel(target, from: line)
                 return
             default:
@@ -482,7 +512,7 @@ private struct Runner {
 
         // Pass 1: modal G codes first, so G20/G21/G90/G91/G17.. apply to the whole block.
         for w in words where w.letter == 71 && w.hasValueFlag {
-            let code = Int((w.value * 10).rounded())
+            let code = (w.value * 10).clampedInt
             switch code {
             case 0: newMotion = .rapid; explicitMotion = true
             case 10: newMotion = .linear; explicitMotion = true
@@ -608,13 +638,13 @@ private struct Runner {
             case 83 where w.hasValueFlag: // S
                 spindle = w.value
             case 84 where w.hasValueFlag: // T
-                pendingTool = Int32(truncatingIfNeeded: Int(w.value.rounded()))
+                pendingTool = Int32(truncatingIfNeeded: w.value.clampedInt)
             case 80 where w.hasValueFlag: // P
                 rawP = w.value; pHadDecimal = w.hadDecimal
             case 76 where w.hasValueFlag: // L
                 rawL = w.value
             case 68 where w.hasValueFlag: // D
-                dWord = Int(w.value.rounded())
+                dWord = w.value.clampedInt
             case 65, 66, 67: // A B C
                 // A rotary word at zero changes nothing; any other value means the machine turns an axis that
                 // is not simulated, so the path drawn from X, Y and Z alone is incomplete
@@ -623,7 +653,7 @@ private struct Runner {
                              "This program moves a rotary axis (A, B or C). Rotary axes are not simulated, so the path shows X, Y and Z only and is incomplete")
                 }
             case 77 where w.hasValueFlag: // M
-                switch Int(w.value.rounded()) {
+                switch w.value.clampedInt {
                 case 6:
                     tool = pendingTool
                     tp.toolChanges += 1
@@ -638,7 +668,7 @@ private struct Runner {
         }
 
         if selectExtended, let p = rawP {
-            activeOffset = 1000 + Int(p.rounded())
+            activeOffset = 1000 + p.clampedInt
         }
         let none = SIMD3<Double>(repeating: 0)
 
@@ -665,9 +695,9 @@ private struct Runner {
             }
 
         case 100: // G10 L2 Pn: set a work offset (machine position of the work zero)
-            let l = Int((rawL ?? 0).rounded())
+            let l = (rawL ?? 0).clampedInt
             if l == 2 || l == 20, let p = rawP {
-                let index = Int(p.rounded()) >= 1 && Int(p.rounded()) <= 6 ? 53 + Int(p.rounded()) : activeOffset
+                let index = p.clampedInt >= 1 && p.clampedInt <= 6 ? 53 + p.clampedInt : activeOffset
                 var value = offsets[index] ?? none
                 for k in 0..<3 where axisMask & (1 << UInt8(k)) != 0 {
                     value[k] = l == 2 ? axisValue[k] : value[k] + axisValue[k]
@@ -758,7 +788,7 @@ private struct Runner {
                     noteOnce(10013, line: line, .warning,
                              "Canned cycle without an R plane or a Z depth; the hole is skipped")
                 } else {
-                    let repeats = max(1, Int((rawL ?? rawK ?? 1).rounded()))
+                    let repeats = min(9999, max(1, (rawL ?? rawK ?? 1).clampedInt))
                     for _ in 0..<repeats {
                         var xy = pos
                         if rotActive {
@@ -814,17 +844,17 @@ private struct Runner {
         }
 
         if isMacroCall, let p = macroArgs[80] {
-            pendingCall = .macro(number: Int(p.rounded()), args: macroArgs)
+            pendingCall = .macro(number: p.clampedInt, args: macroArgs)
         } else if callSub, let p = rawP {
-            var number = Int(p.rounded())
-            var count = rawL.map { Int($0.rounded()) } ?? 1
+            var number = p.clampedInt
+            var count = rawL.map { $0.clampedInt } ?? 1
             if number > 9999 {
                 count = number / 10000
                 number %= 10000
             }
             pendingCall = .sub(number: number, count: count, local: false)
         } else if callLocal, let p = rawP {
-            pendingCall = .sub(number: Int(p.rounded()), count: rawL.map { Int($0.rounded()) } ?? 1, local: true)
+            pendingCall = .sub(number: p.clampedInt, count: rawL.map { $0.clampedInt } ?? 1, local: true)
         } else if returnFromSub {
             pendingCall = .ret
         }
