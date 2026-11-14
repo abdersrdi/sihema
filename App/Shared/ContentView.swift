@@ -39,7 +39,7 @@ struct ContentView: View {
             CompareView(baseText: document.text)
                 .tabItem { Label("Compare", systemImage: "rectangle.split.2x1") }
                 .tag("compare")
-            ReportView(analysis: analysis) { line in
+            ReportView(analysis: analysis, model: settings.motionModel) { line in
                 jump = JumpRequest(line: line)
                 selection = "code"
             }

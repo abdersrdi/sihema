@@ -4,6 +4,8 @@ import SihemaCore
 /// Numbers from the core: size of the program, speed, diagnostics, and a first 3-axis material removal run.
 struct ReportView: View {
     let analysis: Analysis?
+    /// How the machine moves, for the cycle time.
+    var model = MotionModel()
     /// Called with a zero-based line when a message is tapped, so the editor can show it.
     var onSelectLine: (Int) -> Void = { _ in }
 
@@ -23,8 +25,8 @@ struct ReportView: View {
         if let analysis {
             List {
                 let path = analysis.toolpath
-                Section("Summary") {
-                    row("Cycle time (with acceleration)", formatTime(path.cycleTime()))
+                Section {
+                    row("Cycle time (estimate)", formatTime(path.cycleTime(model: model)))
                     row("Cutting length", String(format: "%.1f mm", path.cuttingLength))
                     row("Rapid length", String(format: "%.1f mm", path.rapidLength))
                     row("Tool changes", "\(path.toolChanges)")
@@ -33,6 +35,10 @@ struct ReportView: View {
                     }
                     row("Program end", path.endedByProgramEnd ? "M2 / M30" : "None (no M2 or M30)")
                     row("Lines / moves", "\(analysis.lineCount) / \(path.segments.count)")
+                } header: {
+                    Text("Summary")
+                } footer: {
+                    Text("The time assumes rapids at \(Int(model.rapidFeedMMPerMin)) mm/min, acceleration of \(Int(model.accelerationMMPerS2)) mm/s² and \(Int(model.toolChangeSeconds)) s per tool change. Set your machine's values, or fit them to a time you measured, in the Tools tab.")
                 }
                 Section(messagesTitle(path)) {
                     if path.diagnostics.isEmpty {

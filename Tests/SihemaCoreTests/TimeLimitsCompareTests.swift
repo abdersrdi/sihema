@@ -35,9 +35,53 @@ final class TimeLimitsCompareTests: XCTestCase {
         XCTAssertEqual(tp.cycleTime(model: model()), 2.1, accuracy: 1e-9)
     }
 
-    func testRightAngleCornerStopsTheTool() {
+    func testRightAngleCornerStopsTheToolWhenNoSpeedStepIsAllowed() {
         let tp = path("G01 X100 F6000\nG01 Y100\n")
-        XCTAssertEqual(tp.cycleTime(model: model()), 2.2, accuracy: 1e-9)
+        var exactStop = model()
+        exactStop.cornerStepMMPerS = 0
+        XCTAssertEqual(tp.cycleTime(model: exactStop), 2.2, accuracy: 1e-9)
+        // with a step of 10 mm/s the tool goes through the corner at 10 mm/s and is faster overall
+        var stepping = model()
+        stepping.cornerStepMMPerS = 10
+        XCTAssertLessThan(tp.cycleTime(model: stepping), 2.2)
+    }
+
+    func testAccelerationIsRecoveredFromAMeasuredTime() {
+        let tp = path("G00 X80 Y40\nG01 X10 Y10 F3000\nG01 X60 Y10\nG03 X60 Y50 I0 J20\nG01 X10 Y50\nG00 X0 Y0\n")
+        for truth in [250.0, 900.0, 2400.0, 8000.0] {
+            var m = model()
+            m.accelerationMMPerS2 = truth
+            let measured = tp.cycleTime(model: m)
+            guard case .fitted(let found) = tp.fitAcceleration(toMeasuredSeconds: measured, model: model()) else {
+                return XCTFail("no fit for \(truth)")
+            }
+            XCTAssertEqual(found, truth, accuracy: truth * 0.01, "acceleration \(truth)")
+        }
+    }
+
+    func testImpossibleMeasuredTimesAreSaidSo() {
+        let tp = path("G00 X80 Y40\nG01 X10 Y10 F3000\n")
+        if case .tooFast = tp.fitAcceleration(toMeasuredSeconds: 0.01, model: model()) {} else { XCTFail("too fast") }
+        if case .tooSlow = tp.fitAcceleration(toMeasuredSeconds: 1e7, model: model()) {} else { XCTFail("too slow") }
+    }
+
+    func testDiagonalRapidIsLimitedByItsSlowestAxis() {
+        // 100 mm in X and 100 mm in Y at 6000 mm/min per axis: each axis needs 1 s, so the move takes 1 s of
+        // cruise (plus acceleration), not the 1.41 s a path of 141 mm at 100 mm/s would
+        let tp = path("G00 X100 Y100\n")
+        let diagonal = tp.cycleTime(model: model(rapid: 6000))
+        let straight = path("G00 X100\n").cycleTime(model: model(rapid: 6000))
+        XCTAssertEqual(diagonal, straight, accuracy: 0.2)
+        XCTAssertLessThan(diagonal, 1.35)
+    }
+
+    func testSmallCircleIsLimitedByCentripetalAcceleration() {
+        // radius 1 mm at 1000 mm/s2: at most sqrt(1000 * 1) = 31.6 mm/s, although the feed asks for 100 mm/s
+        let small = path("G00 X1 Y0\nG03 X1 Y0 I-1 J0 F6000\n").cycleTime(model: model(rapid: 6000))
+        let large = path("G00 X100 Y0\nG03 X100 Y0 I-100 J0 F6000\n").cycleTime(model: model(rapid: 6000))
+        // the small circle is 2*pi mm long: at the limited speed it takes about 0.2 s, at full feed only 0.063 s
+        XCTAssertGreaterThan(small - path("G00 X1 Y0\n").cycleTime(model: model(rapid: 6000)), 0.15)
+        XCTAssertGreaterThan(large, 0)
     }
 
     func testGentleCornerSlowsTheToolOnlyALittle() {

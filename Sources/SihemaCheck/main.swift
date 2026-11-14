@@ -33,6 +33,7 @@ func svg(for toolpath: Toolpath) -> String {
 var files: [String] = []
 var svgDir: String?
 var dumpPath: String?
+var model = MotionModel()
 var config = MachineConfig()
 var args = Array(CommandLine.arguments.dropFirst())
 while !args.isEmpty {
@@ -47,6 +48,19 @@ while !args.isEmpty {
         for pair in args.removeFirst().split(separator: ",") {
             let parts = pair.split(separator: "=")
             if parts.count == 2, let d = Int(parts[0]), let r = Double(parts[1]) { config.cutterRadii[d] = r }
+        }
+    } else if a == "--model", !args.isEmpty {
+        // for example --model rapid=12000,accel=800,tool=7,corner=3
+        for pair in args.removeFirst().split(separator: ",") {
+            let parts = pair.split(separator: "=")
+            guard parts.count == 2, let value = Double(parts[1]) else { continue }
+            switch parts[0] {
+            case "rapid": model.rapidFeedMMPerMin = value
+            case "accel": model.accelerationMMPerS2 = value
+            case "tool": model.toolChangeSeconds = value
+            case "corner": model.cornerStepMMPerS = value
+            default: break
+            }
         }
     } else if a == "--inches" {
         config.defaultInches = true
@@ -73,6 +87,7 @@ for path in files {
     }
     print("- cutting \(fmt(toolpath.cuttingLength, 1)) mm, rapid \(fmt(toolpath.rapidLength, 1)) mm, "
           + "time \(fmt(toolpath.estimatedSeconds(rapidFeed: 15_000), 1)) s, ended by M2/M30: \(toolpath.endedByProgramEnd)")
+    print("- cycle time with acceleration \(fmt(toolpath.cycleTime(model: model), 4)) s")
     print("- final position X \(fmt(toolpath.finalPosition.x, 4)) Y \(fmt(toolpath.finalPosition.y, 4)) Z \(fmt(toolpath.finalPosition.z, 4))")
     var counts: [String: (count: Int, first: Int)] = [:]
     for d in toolpath.diagnostics {
@@ -97,6 +112,7 @@ for path in files {
             rows.append(kind + " " + String(s.plane.rawValue) + " " + numbers.joined(separator: " "))
         }
         rows.append("D " + fmt(toolpath.dwellSeconds, 6))
+        rows.append("T " + String(toolpath.toolChanges))
         try? (rows.joined(separator: "\u{0A}") + "\u{0A}").write(toFile: dump, atomically: true, encoding: .utf8)
     }
     if let dir = svgDir, toolpath.hasBounds {

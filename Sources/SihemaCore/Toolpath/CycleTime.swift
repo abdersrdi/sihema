@@ -3,12 +3,16 @@ import Foundation
 /// How the machine moves, for estimating cycle time. Real values come from the machine profile; these defaults
 /// are typical for a small machining centre.
 public struct MotionModel: Sendable {
-    /// Rapid traverse rate in mm/min.
+    /// Rapid traverse rate of each axis in mm/min. A rapid move takes as long as its slowest axis needs.
     public var rapidFeedMMPerMin = 15_000.0
     /// Axis acceleration and deceleration in mm/s^2.
     public var accelerationMMPerS2 = 1_500.0
     /// Time for one tool change in seconds.
     public var toolChangeSeconds = 5.0
+    /// The sudden change of speed one axis is allowed at the join of two moves, in mm/s. A join that turns by a
+    /// small angle needs only a small change, so the tool keeps its speed; a sharp corner needs a large one, so the
+    /// tool slows until the change fits. Zero means an exact stop at every corner.
+    public var cornerStepMMPerS = 5.0
 
     public init() {}
 }
@@ -21,6 +25,16 @@ public struct TravelLimits: Sendable {
         self.minimum = minimum
         self.maximum = maximum
     }
+}
+
+/// The result of fitting the acceleration of the motion model to a measured cycle time.
+public enum AccelerationFit: Sendable, Equatable {
+    case fitted(Double)
+    /// The measured time is shorter than the program can run even with a very high acceleration, so the other values
+    /// (rapid rate, tool change time) are too slow.
+    case tooFast(shortestPossible: Double)
+    /// The measured time is longer than the program takes even with a very low acceleration.
+    case tooSlow(longestAtLowestAcceleration: Double)
 }
 
 extension Segment {
@@ -51,7 +65,8 @@ extension Segment {
 
 extension Toolpath {
     /// Cycle time with acceleration: each move is a trapezoid of speed, and the tool only keeps its speed round a
-    /// corner as far as the direction change allows (a sharp corner of 90 degrees or more stops it).
+    /// corner as far as the allowed speed step of an axis permits. Curves are limited by acceleration towards their
+    /// centre (v squared over the radius), and rapid moves by the rate of the axis that has the most to travel.
     public func cycleTime(model: MotionModel = MotionModel()) -> Double {
         let n = segments.count
         let extra = dwellSeconds + Double(toolChanges) * model.toolChangeSeconds
@@ -62,8 +77,19 @@ extension Toolpath {
         var cruise = [Double](repeating: 0, count: n)
         for (i, s) in segments.enumerated() {
             length[i] = s.length
-            let feed = (s.kind == .rapid || s.feed <= 0) ? model.rapidFeedMMPerMin : s.feed
-            cruise[i] = max(feed, 1) / 60
+            if s.kind == .rapid || s.feed <= 0 {
+                // every axis moves at most at its rapid rate: along the path that is the rate divided by the
+                // largest share of the move that one axis carries
+                let u = s.direction(atEnd: false)
+                let share = max(abs(u.x), abs(u.y), abs(u.z))
+                cruise[i] = max(model.rapidFeedMMPerMin, 1) / 60 / max(share, 1e-9)
+            } else {
+                cruise[i] = max(s.feed, 1) / 60
+            }
+            if s.kind.isArc {
+                let radius = s.arcGeometry.startRadius
+                if radius > 0 { cruise[i] = min(cruise[i], max((a * radius).squareRoot(), 1)) }
+            }
         }
 
         // speed at the start of each move; the last entry is the speed at the end of the program
@@ -72,8 +98,13 @@ extension Toolpath {
             for i in 1..<n {
                 let t0 = segments[i - 1].direction(atEnd: true)
                 let t1 = segments[i].direction(atEnd: false)
-                let cosine = (norm(t0) == 0 || norm(t1) == 0) ? 1.0 : (t0 * t1).sum()
-                speed[i] = min(cruise[i - 1], cruise[i]) * max(0, cosine)
+                var limit = min(cruise[i - 1], cruise[i])
+                if norm(t0) > 0 && norm(t1) > 0 {
+                    let change = t1 - t0
+                    let step = max(abs(change.x), abs(change.y), abs(change.z))
+                    if step > 1e-9 { limit = min(limit, max(model.cornerStepMMPerS, 0) / step) }
+                }
+                speed[i] = limit
             }
         }
         for i in 0..<n {
@@ -98,6 +129,26 @@ extension Toolpath {
             }
         }
         return seconds
+    }
+
+    /// The acceleration at which this program takes `measuredSeconds`, with the other values of `model` kept.
+    /// The time only falls as acceleration rises, so the answer is found by halving the range.
+    public func fitAcceleration(toMeasuredSeconds measured: Double, model: MotionModel = MotionModel()) -> AccelerationFit {
+        var m = model
+        let lowest = 5.0, highest = 200_000.0
+        m.accelerationMMPerS2 = highest
+        let fastest = cycleTime(model: m)
+        m.accelerationMMPerS2 = lowest
+        let slowest = cycleTime(model: m)
+        if measured < fastest { return .tooFast(shortestPossible: fastest) }
+        if measured > slowest { return .tooSlow(longestAtLowestAcceleration: slowest) }
+        var low = lowest, high = highest
+        for _ in 0..<60 {
+            let middle = (low * high).squareRoot() // halve on a logarithmic scale: the range spans decades
+            m.accelerationMMPerS2 = middle
+            if cycleTime(model: m) > measured { low = middle } else { high = middle }
+        }
+        return .fitted((low * high).squareRoot())
     }
 
     /// One message for each axis and direction in which the path leaves the machine's travel, naming the first block.

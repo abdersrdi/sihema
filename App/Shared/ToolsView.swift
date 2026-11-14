@@ -41,6 +41,106 @@ struct ToolsView: View {
             } footer: {
                 Text("Enter the cutter diameter for each offset register, the way the offset table of the machine holds it. A value you enter is used for every program on this device.")
             }
+
+            MotionSection(analysis: analysis, settings: settings)
+        }
+    }
+}
+
+/// How the machine moves, which decides the cycle time, and a way to fit it to a time measured on the machine.
+private struct MotionSection: View {
+    let analysis: Analysis?
+    @ObservedObject var settings: ToolSettings
+    @State private var measuredText = ""
+    @State private var message: String?
+    @State private var fitting = false
+
+    static func format(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+    }
+
+    /// h:mm:ss, m:ss or plain seconds.
+    static func parseDuration(_ text: String) -> Double? {
+        let parts = text.split(separator: ":").map { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard !parts.isEmpty, parts.count <= 3, !parts.contains(where: { $0 == nil || $0! < 0 }) else { return nil }
+        let seconds = parts.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        return seconds > 0 ? seconds : nil
+    }
+
+    private func numberRow(_ title: String, _ value: Binding<Double>, _ unit: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("", value: value, format: .number)
+                .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 90)
+                #if os(iOS)
+                .keyboardType(.decimalPad)
+                #endif
+            Text(unit).foregroundStyle(.secondary).frame(minWidth: 52, alignment: .leading)
+        }
+    }
+
+    var body: some View {
+        Section {
+            numberRow("Rapid rate", $settings.rapidMMPerMin, "mm/min")
+            numberRow("Acceleration", $settings.accelerationMMPerS2, "mm/s²")
+            numberRow("Tool change", $settings.toolChangeSeconds, "s")
+            numberRow("Corner speed step", $settings.cornerStepMMPerS, "mm/s")
+            if let analysis {
+                HStack {
+                    Text("Estimate for this program")
+                    Spacer()
+                    Text(Self.format(analysis.toolpath.cycleTime(model: settings.motionModel)))
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
+                HStack {
+                    Text("Measured on the machine")
+                    Spacer()
+                    TextField("h:mm:ss", text: $measuredText)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 110)
+                        #if os(iOS)
+                        .keyboardType(.numbersAndPunctuation)
+                        #endif
+                }
+                Button(fitting ? "Fitting..." : "Fit acceleration to the measured time") { fit(analysis) }
+                    .disabled(fitting || analysis.toolpath.segments.isEmpty)
+            }
+            if let message {
+                Text(message).font(.callout).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Machine motion (cycle time)")
+        } footer: {
+            Text("The starting values are typical for a small machining centre. A machine's real rapid rate and tool change time are in its manual; acceleration is hard to look up, so run this program once, time it, and let the app fit it.")
+        }
+    }
+
+    private func fit(_ analysis: Analysis) {
+        guard let measured = Self.parseDuration(measuredText) else {
+            message = "Enter the measured time as h:mm:ss, m:ss or seconds."
+            return
+        }
+        fitting = true
+        message = nil
+        let path = analysis.toolpath
+        let model = settings.motionModel
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                path.fitAcceleration(toMeasuredSeconds: measured, model: model)
+            }.value
+            fitting = false
+            switch result {
+            case .fitted(let value):
+                settings.accelerationMMPerS2 = value.rounded()
+                message = "Acceleration set to \(Int(value.rounded())) mm/s², so this program now takes \(Self.format(measured))."
+            case .tooFast(let shortest):
+                message = "The measured time is shorter than this program can run in the model (\(Self.format(shortest))) even with a very high acceleration. Raise the rapid rate or lower the tool change time first."
+            case .tooSlow(let longest):
+                message = "The measured time is longer than the model gives even with a very low acceleration (\(Self.format(longest))). Slower feeds or pauses on the machine are not in the program, so the time cannot be matched."
+            }
         }
     }
 }
