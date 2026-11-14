@@ -84,7 +84,7 @@ def main(path):
                 r = vals["R"]
                 dx, dy = eu - su, ev - sv
                 d = math.hypot(dx, dy)
-                if d < 1e-12 or abs(r) < d / 2 - 1e-9:
+                if d < 1e-12 or (d / 2 - abs(r)) > 0.005 + 0.001 * (d / 2):
                     # invalid arc: Sihema reports an error and draws nothing
                     pos = target
                     continue

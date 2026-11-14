@@ -86,6 +86,20 @@ final class MacroParser {
 
     func advance(_ count: Int = 1) { index = min(bytes.count, index + count) }
 
+    func peek(at offset: Int) -> UInt8? { index + offset < bytes.count ? bytes[index + offset] : nil }
+
+    /// Skips spaces and (comments). Inside an expression a comment is never an operand, and some programs put
+    /// one there, so it is skipped.
+    func skipBlanks() {
+        while true {
+            skipSpace()
+            guard peek() == 40 else { return }
+            let before = index
+            skipComment()
+            if index == before { advance() } // never stand still
+        }
+    }
+
     func skipSpace() {
         while index < bytes.count && (bytes[index] == 32 || bytes[index] == 9) { index += 1 }
     }
@@ -310,7 +324,7 @@ final class MacroParser {
     func parseExpression() throws -> Double {
         var left = try parseAdditive()
         while true {
-            skipSpace()
+            skipBlanks()
             var op = peekAlphaRun()
             if ["EQ", "NE", "GT", "LT", "GE", "LE"].contains(op) {
                 advance(op.count)
@@ -336,23 +350,27 @@ final class MacroParser {
     private func parseAdditive() throws -> Double {
         var left = try parseMultiplicative()
         while true {
-            skipSpace()
+            skipBlanks()
             if peek() == 43 {
                 advance()
                 left += try parseMultiplicative()
             } else if peek() == 45 {
                 advance()
                 left -= try parseMultiplicative()
+            } else if peek() == 124 && peek(at: 1) == 124 { // ||
+                advance(2)
+                let right = try parseMultiplicative()
+                left = Double(left.clampedInt | right.clampedInt)
             } else {
                 let op = peekAlphaRun()
                 if op == "OR" {
                     advance(2)
                     let right = try parseMultiplicative()
-                    left = Double(Int(left) | Int(right))
+                    left = Double(left.clampedInt | right.clampedInt)
                 } else if op == "XOR" {
                     advance(3)
                     let right = try parseMultiplicative()
-                    left = Double(Int(left) ^ Int(right))
+                    left = Double(left.clampedInt ^ right.clampedInt)
                 } else {
                     break
                 }
@@ -364,7 +382,7 @@ final class MacroParser {
     private func parseMultiplicative() throws -> Double {
         var left = try parseOperand() ?? 0
         while true {
-            skipSpace()
+            skipBlanks()
             if peek() == 42 {
                 advance()
                 left *= try parseOperand() ?? 0
@@ -373,12 +391,16 @@ final class MacroParser {
                 let right = try parseOperand() ?? 0
                 guard right != 0 else { throw MacroError("Division by zero") }
                 left /= right
+            } else if peek() == 38 && peek(at: 1) == 38 { // &&
+                advance(2)
+                let right = try parseOperand() ?? 0
+                left = Double(left.clampedInt & right.clampedInt)
             } else {
                 let op = peekAlphaRun()
                 if op == "AND" {
                     advance(3)
                     let right = try parseOperand() ?? 0
-                    left = Double(Int(left) & Int(right))
+                    left = Double(left.clampedInt & right.clampedInt)
                 } else if op == "MOD" {
                     advance(3)
                     let right = try parseOperand() ?? 0

@@ -294,6 +294,24 @@ final class InterpreterTests: XCTestCase {
         XCTAssertEqual(tp.segments.last?.end.y ?? 0, 1, accuracy: 1e-9)
     }
 
+    func testBareIfRunsTheRestOfTheBlockOnlyWhenTrue() {
+        let tp = run("#1=1\n#2=2\nIF [#1 EQ #2] G01 X5 F100\nIF [#1 NE #2] G01 Y7 F100\n")
+        XCTAssertEqual(tp.segments.count, 1)
+        XCTAssertEqual(tp.segments[0].end.y, 7, accuracy: 1e-9)
+        XCTAssertEqual(tp.segments[0].end.x, 0, accuracy: 1e-9)
+    }
+
+    func testCommentInsideABracketedExpression() {
+        let tp = run("#4=2\nG01 X [ 10 / 2. + #4 (OTYEZD X) ] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 7, accuracy: 1e-9)
+        XCTAssertFalse(tp.diagnostics.contains { $0.severity == .error })
+    }
+
+    func testSymbolicAndOr() {
+        let tp = run("#1=5\nIF [[#1 <= 0] || [#1 > 3]] THEN #2=1\nIF [[#1 > 3] && [#1 < 4]] THEN #2=9\nG01 X[#2] F100\n")
+        XCTAssertEqual(tp.segments.last?.end.x ?? 0, 1, accuracy: 1e-9)
+    }
+
     func testBrokenWhileDoesNotTrapTheProgram() {
         let tp = run("WHILE[#1 LT ]DO1\nG01 X1 F100\nEND1\nG01 X5\n")
         XCTAssertEqual(tp.segments.last?.end.x ?? 0, 5, accuracy: 1e-9)

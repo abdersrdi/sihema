@@ -389,8 +389,11 @@ private struct Runner {
                 } else if next == "THEN" {
                     p.advance(4)
                     if condition == 0 { return }
-                } else {
+                } else if p.peek() == nil {
                     throw MacroError("IF needs GOTO or THEN")
+                } else if condition == 0 {
+                    // `IF [cond] S1000 F400`: the rest of the block is done only when the condition holds
+                    return
                 }
             case "WHILE":
                 p.advance(5)
